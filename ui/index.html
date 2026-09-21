@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>JevLens — Jev decision timeline</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" integrity="sha384-9nhczxUqK87bcKHh20fSQcTGD4qq5GhayNYSYWqwBkINBhOfQLg/P5HG5lF1urn4" crossorigin="anonymous" onerror="window.__noChart = true"></script>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0d1117;
+        --panel: #161b22;
+        --panel-2: #1c2128;
+        --line: #30363d;
+        --text: #e6edf3;
+        --muted: #8b949e;
+        --accent: #58a6ff;
+        --ok: #3fb950;
+        --warn: #f85149;
+        --amber: #d29922;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.5 ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      }
+      header {
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        background: rgba(13, 17, 23, 0.94);
+        backdrop-filter: blur(6px);
+        border-bottom: 1px solid var(--line);
+        padding: 12px 18px;
+      }
+      h1 { font-size: 16px; margin: 0 0 6px; letter-spacing: 0.02em; }
+      h1 span { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 8px; }
+      .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+      .controls label { color: var(--muted); font-size: 12px; }
+      select, input[type="number"], input[type="search"], button, a.btn {
+        background: var(--panel-2);
+        color: var(--text);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 5px 8px;
+        font: inherit;
+        font-size: 12px;
+      }
+      a.btn { text-decoration: none; display: inline-block; }
+      a.btn:hover { border-color: var(--accent); }
+      input[type="number"] { width: 74px; }
+      input[type="search"] { min-width: 190px; }
+      button { cursor: pointer; }
+      button:hover { border-color: var(--accent); }
+      .status { color: var(--muted); font-size: 12px; margin-left: auto; }
+      main { padding: 16px 18px 60px; max-width: 1180px; margin: 0 auto; }
+      .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+      .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+      .card b { display: block; font-size: 20px; }
+      .card small { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+      .chartwrap { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-bottom: 16px; }
+      .chartwrap h2, .empty h2 { font-size: 12px; margin: 0 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+      .chart-fallback { color: var(--muted); font-size: 12px; }
+      .row { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; margin-bottom: 10px; overflow: hidden; }
+      .row.alert { border-color: var(--warn); box-shadow: inset 3px 0 0 var(--warn); }
+      .head { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: baseline; padding: 10px 12px; cursor: pointer; }
+      .head:hover { background: var(--panel-2); }
+      time { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+      .chip { border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; font-size: 12px; background: var(--panel-2); }
+      .chip.label { color: var(--accent); border-color: #274a6d; }
+      .chip.badge-ok { color: var(--ok); border-color: #2a5233; }
+      .chip.badge-warn { color: var(--warn); border-color: #6d2a2a; font-weight: 600; }
+      .chip.badge-undecided { background: #3d1d1d; color: #ff9d9d; border-color: #6d2a2a; font-weight: 600; }
+      .chip.mock { color: var(--amber); border-color: #5a4a1a; }
+      .peek { color: var(--muted); font-size: 12px; margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 46%; }
+      .body { border-top: 1px solid var(--line); padding: 12px; display: none; }
+      .row.open .body { display: block; }
+      .section { margin-bottom: 14px; }
+      .section > h3 { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 6px; }
+      .q { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 8px; background: #12171d; }
+      .q h4 { margin: 0 0 2px; font-size: 13px; }
+      .q .instr { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+      .bar { display: grid; grid-template-columns: minmax(90px, 26%) 1fr 78px; gap: 8px; align-items: center; margin: 3px 0; font-size: 12px; }
+      .bar .track { background: #0b0f14; border: 1px solid var(--line); border-radius: 4px; height: 12px; overflow: hidden; }
+      .bar .fill { height: 100%; background: linear-gradient(90deg, #1f6feb, #58a6ff); }
+      .bar.win .fill { background: linear-gradient(90deg, #238636, #3fb950); }
+      .bar.win.low .fill { background: linear-gradient(90deg, #b62324, #f85149); }
+      .bar .pct { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+      .meta { color: var(--muted); font-size: 12px; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+      pre {
+        background: #0b0f14; border: 1px solid var(--line); border-radius: 8px; padding: 10px;
+        overflow: auto; max-height: 320px; font-size: 12px; margin: 0; white-space: pre-wrap; word-break: break-word;
+      }
+      ul.hints { margin: 0; padding-left: 18px; }
+      ul.hints li { margin: 2px 0; font-size: 12px; }
+      ul.hints li.warn { color: #ffb3b3; }
+      ul.hints li.info { color: #e3d2a8; }
+      .error { color: #ffb3b3; }
+      .empty { background: var(--panel); border: 1px dashed var(--line); border-radius: 10px; padding: 22px; color: var(--muted); }
+      .empty code { color: var(--text); background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+      footer { color: var(--muted); font-size: 11px; text-align: center; padding: 20px; }
+      a { color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>JevLens <span>Jev decision timeline · local JSONL · no data leaves this machine</span></h1>
+      <div class="controls">
+        <label>label <select id="label"><option value="">all</option></select></label>
+        <label>confidence alert &lt; <input id="threshold" type="number" min="0" max="1" step="0.05" value="0.7" /></label>
+        <label><input id="lowonly" type="checkbox" /> flagged only</label>
+        <label>limit <select id="limit"><option>50</option><option>100</option><option>200</option><option>500</option></select></label>
+        <input id="search" type="search" placeholder="filter by text…" />
+        <label><input id="auto" type="checkbox" checked /> auto-refresh 3s</label>
+        <button id="refresh">refresh</button>
+        <button id="expand">expand all</button>
+        <a class="btn" id="md" href="/api/export?format=markdown" download>export .md</a>
+        <a class="btn" id="csv" href="/api/export?format=csv" download>export .csv</a>
+        <span class="status" id="status">loading…</span>
+      </div>
+    </header>
+    <main>
+      <div class="cards" id="cards"></div>
+      <div class="chartwrap"><h2>minimum confidence per decision (newest right)</h2><canvas id="chart" height="70"></canvas><div class="chart-fallback" id="fallback" hidden></div></div>
+      <div id="list"></div>
+      <footer>
+        JevLens · trace file <code id="dir">…</code> · provider <span id="provider">…</span> ·
+        records are append-only JSONL, view them with <code>cat</code>, <code>grep</code> or <code>jq</code>.
+      </footer>
+    </main>
+    <script>
+      const els = {};
+      for (const id of ['label','threshold','lowonly','limit','search','auto','refresh','expand','status','cards','list','dir','provider','md','csv','chart','fallback']) {
+        els[id] = document.getElementById(id);
+      }
+      const state = { records: [], threshold: 0.7, open: new Set(), expandedAll: false, timer: null, first: true };
+
+      const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+      const fmt = (n, digits = 3) => (typeof n === 'number' && isFinite(n) ? n.toFixed(digits) : '—');
+      const nfoul = (answer) => (answer && answer.type === 'noul' ? Math.abs(answer.noul - 0.5) * 2 : undefined);
+
+      function confidenceOf(answer) {
+        if (!answer) return undefined;
+        if (answer.type === 'noul') return nfoul(answer);
+        return answer.confidence;
+      }
+
+      function timeText(ts) {
+        const date = new Date(ts);
+        if (Number.isNaN(date.getTime())) return esc(ts);
+        return date.toLocaleTimeString([], { hour12: false }) + ' · ' + date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+      }
+
+      function probRows(answer) {
+        if (!answer || answer.type === 'noul') return '';
+        const entries = Object.entries(answer.probabilities || {}).sort((a, b) => b[1] - a[1]);
+        const winner = answer.type === 'choice' ? answer.choice : String(Math.trunc(answer.score));
+        return entries
+          .map(([key, value]) => {
+            const pct = Math.max(0, Math.min(100, value * 100));
+            const isWinner = key === winner;
+            const low = (confidenceOf(answer) ?? 1) < state.threshold;
+            const label = answer.type === 'score' && answer.legend && answer.legend[key] !== undefined ? `${key} · ${answer.legend[key]}` : key;
+            return `<div class="bar ${isWinner ? 'win' : ''} ${low ? 'low' : ''}"><div>${esc(label)}</div><div class="track"><div class="fill" style="width:${pct.toFixed(1)}%"></div></div><div class="pct">${(value * 100).toFixed(1)}%</div></div>`;
+          })
+          .join('');
+      }
+
+      function jsonBlock(value) {
+        let text;
+        try { text = JSON.stringify(value, null, 2); } catch { text = String(value); }
+        return `<pre>${esc(text)}</pre>`;
+      }
+
+      function questionBlock(name, question, answer) {
+        const confidence = confidenceOf(answer);
+        const alert = confidence !== undefined && confidence < state.threshold;
+        const criteria = question && question.type === 'choice'
+          ? Object.keys(question.criteria || {}).join(', ')
+          : question && question.type === 'score'
+            ? (question.criteria || []).map((c, i) => `${i}:${typeof c === 'string' ? c : JSON.stringify(c)}`).join(' ')
+            : '';
+        const answered = answer
+          ? answer.type === 'choice' ? esc(answer.choice) : answer.type === 'noul' ? `noul ${fmt(answer.noul)}` : `score ${fmt(answer.score, 0)}`
+          : 'no answer';
+        return `<div class="q">
+          <h4>${esc(name)} <span class="chip">${esc(question ? question.type : '?')}</span>
+            <span class="chip ${alert ? 'badge-warn' : 'badge-ok'}">confidence ${fmt(confidence)}</span></h4>
+          <div class="instr">${esc(typeof question?.instructions === 'string' ? question.instructions : question?.instructions ? JSON.stringify(question.instructions) : '')}</div>
+          <div class="meta"><span>answer: <b>${answered}</b></span>${criteria ? `<span>options: ${esc(criteria)}</span>` : ''}</div>
+          ${probRows(answer)}
+        </div>`;
+      }
+
+      function row(record) {
+        const alert = record.status === 'undecided' || (record.confidence && record.confidence.min < state.threshold);
+        const answers = (record.response && record.response.answers) || {};
+        const questions = (record.request && record.request.questions) || {};
+        const open = state.expandedAll || state.open.has(record.id);
+        const peek = Object.keys(questions).slice(0, 3).map((name) => {
+          const answer = answers[name];
+          if (!answer) return name;
+          if (answer.type === 'choice') return `${name}→${answer.choice}`;
+          if (answer.type === 'score') return `${name}→${Math.trunc(answer.score)}`;
+          return `${name}→${answer.noul.toFixed(2)}`;
+        }).join('  ');
+        return `<div class="row ${alert ? 'alert' : ''} ${open ? 'open' : ''}" data-id="${esc(record.id)}">
+          <div class="head" data-toggle>
+            <time>${timeText(record.ts)}</time>
+            <span class="chip label">${esc(record.label)}</span>
+            ${record.status === 'undecided' ? '<span class="chip badge-undecided">UNDECIDED</span>' : `<span class="chip ${alert ? 'badge-warn' : 'badge-ok'}">min conf ${fmt(record.confidence && record.confidence.min)}</span>`}
+            <span class="chip">${esc(record.response && record.response.model ? record.response.model : 'no model')}</span>
+            <span class="chip">${esc(String(record.latencyMs))} ms</span>
+            ${record.provider === 'mock' ? '<span class="chip mock">mock</span>' : ''}
+            ${record.hints && record.hints.length ? `<span class="chip mock">${record.hints.length} hint${record.hints.length > 1 ? 's' : ''}</span>` : ''}
+            <span class="peek">${esc(peek)}</span>
+          </div>
+          <div class="body">
+            ${Object.keys(questions).map((name) => questionBlock(name, questions[name], answers[name])).join('') || '<div class="meta">no questions recorded</div>'}
+            ${record.hints && record.hints.length ? `<div class="section"><h3>question quality hints</h3><ul class="hints">${record.hints.map((h) => `<li class="${esc(h.severity)}"><b>${esc(h.code)}</b> — ${esc(h.message)}</li>`).join('')}</ul></div>` : ''}
+            ${record.error ? `<div class="section"><h3>error (fail-open)</h3><div class="error">${esc(record.error.name)}: ${esc(record.error.message)}${record.error.status ? ` (HTTP ${record.error.status})` : ''}</div></div>` : ''}
+            <div class="section"><h3>state</h3>${jsonBlock(record.request && record.request.state)}</div>
+            <div class="section"><h3>raw record</h3>${jsonBlock({ id: record.id, agent: record.agent, file: record.file, usage: record.response && record.response.usage, confidence: record.confidence, questions: questions, answers: answers })}</div>
+          </div>
+        </div>`;
+      }
+
+      function visibleRecords() {
+        const needle = els.search.value.trim().toLowerCase();
+        return state.records.filter((record) => {
+          if (els.lowonly.checked) {
+            const alert = record.status === 'undecided' || (record.confidence && record.confidence.min < state.threshold);
+            if (!alert) return false;
+          }
+          if (!needle) return true;
+          return JSON.stringify(record).toLowerCase().includes(needle);
+        });
+      }
+
+      function renderCards(records) {
+        const total = records.length;
+        const undecided = records.filter((r) => r.status === 'undecided').length;
+        const flagged = records.filter((r) => r.status === 'undecided' || (r.confidence && r.confidence.min < state.threshold)).length;
+        const avgLatency = total ? Math.round(records.reduce((a, r) => a + (r.latencyMs || 0), 0) / total) : 0;
+        const cards = [
+          ['decisions', total],
+          ['flagged', flagged],
+          ['undecided', undecided],
+          ['avg latency', avgLatency + ' ms'],
+          ['threshold', state.threshold],
+        ];
+        els.cards.innerHTML = cards.map(([k, v]) => `<div class="card"><b>${esc(v)}</b><small>${esc(k)}</small></div>`).join('');
+      }
+
+      function renderChart() {
+        const series = state.records.slice(0, 60).reverse();
+        const values = series.map((r) => (r.status === 'undecided' ? 0 : r.confidence ? r.confidence.min : 0));
+        if (typeof Chart === 'undefined' || window.__noChart) {
+          els.chart.hidden = true;
+          els.fallback.hidden = false;
+          const buckets = new Array(5).fill(0);
+          for (const value of values) buckets[Math.min(4, Math.floor(value * 5))] += 1;
+          els.fallback.textContent = 'chart library offline — ' + buckets.map((count, i) => `${(i / 5).toFixed(1)}–${((i + 1) / 5).toFixed(1)}:${count}`).join('  ');
+          return;
+        }
+        els.chart.hidden = false;
+        els.fallback.hidden = true;
+        const colors = values.map((v) => (v < state.threshold ? '#f85149' : '#3fb950'));
+        if (state.chart) state.chart.destroy();
+        state.chart = new Chart(els.chart, {
+          type: 'bar',
+          data: { labels: series.map((r) => r.label), datasets: [{ data: values, backgroundColor: colors, borderWidth: 0 }] },
+          options: {
+            animation: false, responsive: true,
+            plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `min confidence ${c.parsed.y.toFixed(3)}` } } },
+            scales: {
+              x: { ticks: { color: '#8b949e', maxTicksLimit: 12 }, grid: { color: '#21262d' } },
+              y: { min: 0, max: 1, ticks: { color: '#8b949e' }, grid: { color: '#21262d' } },
+            },
+          },
+        });
+      }
+
+      function render() {
+        const records = visibleRecords();
+        renderCards(state.records);
+        const list = records.map(row).join('');
+        els.list.innerHTML = list || `<div class="empty"><h2>no decisions yet</h2>
+          <p>Register JevLens with your agent, then call <code>jev_ask</code>. Without an API key run
+          <code>jevlens mcp --mock</code>, or seed this demo with the MCP Inspector (<code>jevlens inspector</code>).</p></div>`;
+        renderChart();
+        els.status.textContent = `${state.records.length} loaded · ${records.length} shown · ${new Date().toLocaleTimeString([], { hour12: false })}`;
+      }
+
+      async function refresh() {
+        const params = new URLSearchParams();
+        params.set('limit', els.limit.value);
+        if (els.label.value) params.set('label', els.label.value);
+        if (els.lowonly.checked) params.set('below', String(state.threshold));
+        try {
+          const response = await fetch(`/api/trace?${params}`, { headers: { accept: 'application/json' } });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.error || response.statusText);
+          state.records = payload.records || [];
+          if (typeof payload.threshold === 'number' && document.activeElement !== els.threshold) state.threshold = payload.threshold;
+          render();
+        } catch (error) {
+          els.status.textContent = 'refresh failed: ' + String(error.message || error);
+        }
+      }
+
+      async function refreshMeta() {
+        try {
+          const config = await (await fetch('/api/config')).json();
+          if (!state.linkThreshold) {
+            state.threshold = config.confidenceThreshold;
+            els.threshold.value = config.confidenceThreshold;
+          }
+          els.dir.textContent = config.storageDir;
+          const health = await (await fetch('/api/health')).json();
+          els.provider.textContent = health.provider + (health.api_key_present ? '' : ' (no API key — see docs)');
+        } catch { /* panel opened before the server was ready */ }
+      }
+
+      async function refreshLabels() {
+        try {
+          const payload = await (await fetch('/api/labels')).json();
+          const current = els.label.value;
+          els.label.innerHTML = '<option value="">all</option>' + (payload.labels || [])
+            .map((entry) => `<option value="${esc(entry.label)}" ${entry.label === (current || state.labelParam) ? 'selected' : ''}>${esc(entry.label)} (${entry.count})</option>`).join('');
+          if (state.labelParam && current !== state.labelParam) {
+            els.label.value = state.labelParam;
+            state.labelParam = null;
+            refresh();
+          }
+        } catch { /* ignore */ }
+      }
+
+      function setTimer() {
+        if (state.timer) clearInterval(state.timer);
+        if (els.auto.checked) state.timer = setInterval(() => { if (!document.hidden) refresh(); }, 3000);
+      }
+
+      /** Deep links: /?label=support&threshold=0.8&flagged=1&expand=1&q=text */
+      function applyLink() {
+        const params = new URLSearchParams(location.search);
+        if (params.get('threshold')) {
+          els.threshold.value = params.get('threshold');
+          state.threshold = Math.min(1, Math.max(0, Number(params.get('threshold'))));
+          state.linkThreshold = true;
+        }
+        if (params.get('q')) els.search.value = params.get('q');
+        if (params.get('flagged') === '1') els.lowonly.checked = true;
+        if (params.get('limit')) els.limit.value = params.get('limit');
+        if (params.get('label')) state.labelParam = params.get('label');
+        if (params.get('expand') === '1') state.expandedAll = true;
+        const wanted = params.get('open');
+        if (wanted) wanted.split(',').forEach((id) => state.open.add(id));
+      }
+
+      els.list.addEventListener('click', (event) => {
+        const head = event.target.closest('[data-toggle]');
+        if (!head) return;
+        const rowEl = head.closest('.row');
+        const id = rowEl.dataset.id;
+        if (state.open.has(id)) state.open.delete(id);
+        else state.open.add(id);
+        rowEl.classList.toggle('open');
+      });
+
+      els.refresh.addEventListener('click', () => { refreshLabels(); refresh(); });
+      els.expand.addEventListener('click', () => {
+        state.expandedAll = !state.expandedAll;
+        if (state.expandedAll) state.records.forEach((r) => state.open.add(r.id));
+        else state.open.clear();
+        render();
+      });
+      els.label.addEventListener('change', refresh);
+      els.limit.addEventListener('change', refresh);
+      els.lowonly.addEventListener('change', render);
+      els.search.addEventListener('input', render);
+      els.auto.addEventListener('change', setTimer);
+      els.threshold.addEventListener('change', async () => {
+        const value = Math.min(1, Math.max(0, Number(els.threshold.value)));
+        els.threshold.value = value;
+        state.threshold = value;
+        state.linkThreshold = false;
+        render();
+        try { await fetch('/api/config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ confidenceThreshold: value }) }); }
+        catch { /* local-only fallback: the threshold still applies in this tab */ }
+        refresh();
+      });
+
+      applyLink();
+      refreshMeta().then(refreshLabels).then(refresh);
+      setTimer();
+    </script>
+  </body>
+</html>

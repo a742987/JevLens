@@ -1,0 +1,57 @@
+{
+  "name": "jevlens",
+  "version": "0.1.0",
+  "description": "Jev decision visualisation and debugging panel for coding agents. MCP server + local web timeline, confidence alerts and trace export.",
+  "keywords": [
+    "jev",
+    "typesafe",
+    "mcp",
+    "model-context-protocol",
+    "observability",
+    "debugging",
+    "ai-agents"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "jevlens": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "ui",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "test": "node --test --test-timeout=20000 \"test/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.dev.json",
+    "check": "npm run typecheck && npm run build && npm test",
+    "prepublishOnly": "npm run clean && npm run build && npm test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@typesafe-ai/sdk": "^0.6.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "typescript": "^7.0.2"
+  }
+}

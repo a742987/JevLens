@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.jevlens/
+*.log
+.tmp-*.png
+.DS_Store
+npm-debug.log*
