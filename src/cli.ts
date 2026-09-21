@@ -24,7 +24,7 @@ const HELP = `JevLens v${VERSION} — Jev decision recorder and debug panel
 Usage
   jevlens mcp         start the MCP server on stdio (register this with your coding agent)
   jevlens ui          start the local decision timeline at http://127.0.0.1:${DEFAULTS.port}
-  jevlens inspector   start the UI plus MCP Inspector for hands-on tool debugging
+  jevlens inspector   start the official MCP Inspector against "jevlens mcp"
 
 Options
   --port <n>          UI port (default ${DEFAULTS.port}, config key "port")
@@ -32,6 +32,7 @@ Options
   --dir <path>        trace directory (default ./.jevlens)
   --threshold <0..1>  confidence alert threshold (default ${DEFAULTS.confidenceThreshold})
   --mock              never call the Jev API; answer deterministically offline
+  --inspector-port <n>  port for "jevlens inspector" (default 6274)
   -h, --help          show this help
   -v, --version       print the version
 
@@ -128,9 +129,13 @@ async function commandUi(config: JevLensConfig): Promise<number> {
   return 0;
 }
 
-async function commandInspector(config: JevLensConfig): Promise<number> {
+async function commandInspector(config: JevLensConfig, values: Record<string, string | boolean | undefined>): Promise<number> {
   const entry = fileURLToPath(import.meta.url);
-  const port = (toNumber(process.env.JEVLENS_INSPECTOR_PORT as string | undefined) ?? 6274).toString();
+  const port = (
+    toNumber(values['inspector-port'] as string | undefined) ??
+    toNumber(process.env.JEVLENS_INSPECTOR_PORT as string | undefined) ??
+    6274
+  ).toString();
   const args = ['-y', '@modelcontextprotocol/inspector', process.execPath, entry, 'mcp'];
   const env: NodeJS.ProcessEnv = { ...process.env, JEVLENS_DIR: config.storageDir, MCP_INSPECTOR_UI_PORT: port };
   process.stderr.write(`[jevlens] launching MCP Inspector on http://127.0.0.1:${port} against "${entry} mcp"\n`);
@@ -171,7 +176,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     case 'ui':
       return commandUi(config);
     case 'inspector':
-      return commandInspector(config);
+      return commandInspector(config, parsed.values);
     default:
       process.stderr.write(`[jevlens] unknown command "${command}"\n\n${HELP}`);
       return 2;
