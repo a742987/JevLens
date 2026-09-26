@@ -74,6 +74,7 @@
       .chip.badge-warn { color: var(--warn); border-color: #6d2a2a; font-weight: 600; }
       .chip.badge-undecided { background: #3d1d1d; color: #ff9d9d; border-color: #6d2a2a; font-weight: 600; }
       .chip.mock { color: var(--amber); border-color: #5a4a1a; }
+      .chip.run { color: var(--muted); border-style: dashed; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
       .peek { color: var(--muted); font-size: 12px; margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 46%; }
       .body { border-top: 1px solid var(--line); padding: 12px; display: none; }
       .row.open .body { display: block; }
@@ -109,6 +110,7 @@
       <h1>JevLens <span>Jev decision timeline · local JSONL · no data leaves this machine</span></h1>
       <div class="controls">
         <label>label <select id="label"><option value="">all</option></select></label>
+        <label>run <select id="run"><option value="">all</option></select></label>
         <label>confidence alert &lt; <input id="threshold" type="number" min="0" max="1" step="0.05" value="0.7" /></label>
         <label><input id="lowonly" type="checkbox" /> flagged only</label>
         <label>limit <select id="limit"><option>50</option><option>100</option><option>200</option><option>500</option></select></label>
@@ -132,7 +134,7 @@
     </main>
     <script>
       const els = {};
-      for (const id of ['label','threshold','lowonly','limit','search','auto','refresh','expand','status','cards','list','dir','provider','md','csv','chart','fallback']) {
+      for (const id of ['label','run','threshold','lowonly','limit','search','auto','refresh','expand','status','cards','list','dir','provider','md','csv','chart','fallback']) {
         els[id] = document.getElementById(id);
       }
       const state = { records: [], threshold: 0.7, open: new Set(), expandedAll: false, timer: null, first: true };
@@ -140,6 +142,8 @@
       const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
       const fmt = (n, digits = 3) => (typeof n === 'number' && isFinite(n) ? n.toFixed(digits) : '—');
       const nfoul = (answer) => (answer && answer.type === 'noul' ? Math.abs(answer.noul - 0.5) * 2 : undefined);
+      /** Run ids are UUIDs or session ids; the tail is the only part worth reading. */
+      const shortRun = (id) => { const s = String(id); return s.length > 8 ? '…' + s.slice(-6) : s; };
 
       function confidenceOf(answer) {
         if (!answer) return undefined;
@@ -213,6 +217,7 @@
             ${record.status === 'undecided' ? '<span class="chip badge-undecided">UNDECIDED</span>' : `<span class="chip ${alert ? 'badge-warn' : 'badge-ok'}">min conf ${fmt(record.confidence && record.confidence.min)}</span>`}
             <span class="chip">${esc(record.response && record.response.model ? record.response.model : 'no model')}</span>
             <span class="chip">${esc(String(record.latencyMs))} ms</span>
+            ${record.runId ? `<span class="chip run" title="run ${esc(record.runId)}">${esc(shortRun(record.runId))}</span>` : ''}
             ${record.provider === 'mock' ? '<span class="chip mock">mock</span>' : ''}
             ${record.hints && record.hints.length ? `<span class="chip mock">${record.hints.length} hint${record.hints.length > 1 ? 's' : ''}</span>` : ''}
             <span class="peek">${esc(peek)}</span>
@@ -222,7 +227,7 @@
             ${record.hints && record.hints.length ? `<div class="section"><h3>question quality hints</h3><ul class="hints">${record.hints.map((h) => `<li class="${esc(h.severity)}"><b>${esc(h.code)}</b> — ${esc(h.message)}</li>`).join('')}</ul></div>` : ''}
             ${record.error ? `<div class="section"><h3>error (fail-open)</h3><div class="error">${esc(record.error.name)}: ${esc(record.error.message)}${record.error.status ? ` (HTTP ${record.error.status})` : ''}</div></div>` : ''}
             <div class="section"><h3>state</h3>${jsonBlock(record.request && record.request.state)}</div>
-            <div class="section"><h3>raw record</h3>${jsonBlock({ id: record.id, agent: record.agent, file: record.file, usage: record.response && record.response.usage, confidence: record.confidence, questions: questions, answers: answers })}</div>
+            <div class="section"><h3>raw record</h3>${jsonBlock({ id: record.id, agent: record.agent, runId: record.runId, file: record.file, usage: record.response && record.response.usage, confidence: record.confidence, questions: questions, answers: answers })}</div>
           </div>
         </div>`;
       }
@@ -294,10 +299,27 @@
         els.status.textContent = `${state.records.length} loaded · ${records.length} shown · ${new Date().toLocaleTimeString([], { hour12: false })}`;
       }
 
+      /** Runs are discovered from the page of records already loaded, newest first. */
+      function renderRuns() {
+        const seen = new Map();
+        for (const record of state.records) {
+          if (record.runId && !seen.has(record.runId)) seen.set(record.runId, timeText(record.ts));
+        }
+        const current = els.run.value;
+        const wanted = state.runParam && seen.has(state.runParam) ? state.runParam : current;
+        els.run.innerHTML = '<option value="">all</option>' + [...seen.entries()]
+          .map(([id, when]) => `<option value="${esc(id)}" ${id === wanted ? 'selected' : ''}>${esc(shortRun(id))} · ${esc(when)}</option>`)
+          .join('');
+        if (wanted && current !== wanted) { els.run.value = wanted; state.runParam = null; return true; }
+        return false;
+      }
+
       async function refresh() {
         const params = new URLSearchParams();
         params.set('limit', els.limit.value);
         if (els.label.value) params.set('label', els.label.value);
+        if (els.run.value) params.set('run', els.run.value);
+        else if (state.runParam) params.set('run', state.runParam);
         if (els.lowonly.checked) params.set('below', String(state.threshold));
         try {
           const response = await fetch(`/api/trace?${params}`, { headers: { accept: 'application/json' } });
@@ -305,7 +327,15 @@
           if (!response.ok) throw new Error(payload.error || response.statusText);
           state.records = payload.records || [];
           if (typeof payload.threshold === 'number' && document.activeElement !== els.threshold) state.threshold = payload.threshold;
+          // Exports follow the active filters, so what you download is what you see.
+          const exportQuery = new URLSearchParams();
+          if (els.label.value) exportQuery.set('label', els.label.value);
+          if (els.run.value) exportQuery.set('run', els.run.value);
+          const suffix = exportQuery.toString() ? `&${exportQuery.toString()}` : '';
+          els.md.href = `/api/export?format=markdown${suffix}`;
+          els.csv.href = `/api/export?format=csv${suffix}`;
           render();
+          if (renderRuns()) refresh();
         } catch (error) {
           els.status.textContent = 'refresh failed: ' + String(error.message || error);
         }
@@ -343,7 +373,7 @@
         if (els.auto.checked) state.timer = setInterval(() => { if (!document.hidden) refresh(); }, 3000);
       }
 
-      /** Deep links: /?label=support&threshold=0.8&flagged=1&expand=1&q=text */
+      /** Deep links: /?label=support&run=<id>&threshold=0.8&flagged=1&expand=1&q=text */
       function applyLink() {
         const params = new URLSearchParams(location.search);
         if (params.get('threshold')) {
@@ -355,6 +385,7 @@
         if (params.get('flagged') === '1') els.lowonly.checked = true;
         if (params.get('limit')) els.limit.value = params.get('limit');
         if (params.get('label')) state.labelParam = params.get('label');
+        if (params.get('run')) state.runParam = params.get('run');
         if (params.get('expand') === '1') state.expandedAll = true;
         const wanted = params.get('open');
         if (wanted) wanted.split(',').forEach((id) => state.open.add(id));
@@ -378,6 +409,7 @@
         render();
       });
       els.label.addEventListener('change', refresh);
+      els.run.addEventListener('change', () => { state.runParam = null; refresh(); });
       els.limit.addEventListener('change', refresh);
       els.lowonly.addEventListener('change', render);
       els.search.addEventListener('input', render);

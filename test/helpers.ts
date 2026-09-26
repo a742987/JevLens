@@ -1,10 +1,24 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadConfig, type JevLensConfig } from '../src/config.ts';
 import { createContext, type JevLensContext } from '../src/decision.ts';
 import type { JevProvider, JevReply, JevRequest } from '../src/jev.ts';
 import type { Questions } from '../src/types.ts';
+
+/**
+ * The CLI entry to spawn.
+ *
+ * It deliberately defaults to the TypeScript source rather than "dist if it
+ * happens to exist". A stale build makes the suite test last week's code, and
+ * the failures point at the wrong file — which cost a debugging cycle here.
+ * Set JEVLENS_TEST_ENTRY=dist/cli.js to run the same tests against the shipped
+ * artefact, which is what CI does after `npm run build`.
+ */
+export const cliEntry: string = process.env.JEVLENS_TEST_ENTRY
+  ? resolve(process.env.JEVLENS_TEST_ENTRY)
+  : fileURLToPath(new URL('../src/cli.ts', import.meta.url));
 
 export interface TempWorkspace {
   config: JevLensConfig;

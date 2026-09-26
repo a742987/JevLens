@@ -43,7 +43,7 @@
     "test": "node --test --test-timeout=20000 \"test/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.dev.json",
     "check": "npm run typecheck && npm run build && npm test",
-    "prepublishOnly": "npm run clean && npm run build && npm test"
+    "prepublishOnly": "npm run clean && npm run typecheck && npm run build && npm test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

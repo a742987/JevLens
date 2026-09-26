@@ -166,3 +166,63 @@ test('createProvider falls back to the mock when no key is configured', async ()
   );
   await workspace.cleanup();
 });
+
+test('a provider that never returns is cut off and still degrades to undecided', async () => {
+  const workspace = await tempWorkspace();
+  const ctx = createContext(workspace.config, {}, {
+    kind: 'live' as const,
+    note: 'hanging provider',
+    async ask(): Promise<never> {
+      return new Promise<never>(() => {});
+    },
+  });
+  const started = Date.now();
+  const outcome = await decide(
+    ctx.provider,
+    { state: 'x', questions: triageQuestions as Questions },
+    { timeoutMs: 120 },
+  );
+  assert.equal(outcome.status, 'undecided', 'fail-open does not depend on the SDK honouring the deadline');
+  assert.equal(outcome.error?.name, 'JevTimeoutError');
+  assert.match(outcome.error?.message ?? '', /did not answer within 120ms/);
+  assert.ok(outcome.latencyMs < 2_000, `returned in ${outcome.latencyMs}ms rather than hanging`);
+  assert.ok(Object.keys(outcome.answers).length === 2, 'the agent still gets an answer per question');
+  assert.ok(Date.now() - started >= 100, 'the watchdog actually waited');
+  await workspace.cleanup();
+});
+
+test('an outage records the model that was asked, not "unknown"', async () => {
+  const workspace = await tempWorkspace();
+  const config = { ...workspace.config, model: 'system-one-2025-09' };
+  const ctx = createContext(config, {}, new BrokenProvider('down'));
+  const outcome = await decide(
+    ctx.provider,
+    { state: 'x', questions: triageQuestions as Questions },
+    { defaultModel: config.model },
+  );
+  assert.equal(outcome.status, 'undecided');
+  assert.equal(outcome.model, 'system-one-2025-09', 'the configured default survives the failure');
+
+  const override = await decide(
+    ctx.provider,
+    { state: 'x', questions: triageQuestions as Questions, model: 'per-call-model' },
+    { defaultModel: config.model },
+  );
+  assert.equal(override.model, 'per-call-model', 'a per-call override wins');
+
+  // What the panel actually reads: the same field must survive the whole capture.
+  const captured = await captureDecision(ctx, { state: 'x', questions: triageQuestions as Questions });
+  assert.equal(captured.record.response?.model, 'system-one-2025-09');
+  assert.equal(captured.record.status, 'undecided');
+  await workspace.cleanup();
+});
+
+test('the run id is recorded and survives the round trip through storage', async () => {
+  const workspace = await tempWorkspace();
+  const ctx = contextFor(workspace.config);
+  await captureDecision(ctx, { state: ticketState, questions: triageQuestions, runId: 'run-7' });
+  const [stored] = await ctx.store.read({ runId: 'run-7' });
+  assert.equal(stored?.runId, 'run-7', 'the run id reaches the JSONL file, not just the response');
+  assert.deepEqual(await ctx.store.read({ runId: 'other-run' }), []);
+  await workspace.cleanup();
+});

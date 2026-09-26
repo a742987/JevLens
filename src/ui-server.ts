@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { exportsDir, saveConfig, type JevLensConfig } from './config.ts';
+import { exportsDir, isLoopbackHost, saveConfig, type JevLensConfig } from './config.ts';
 import { uiUrl } from './decision.ts';
 import { reportFileName, toCsv, toMarkdown } from './export.ts';
 import type { JevLensContext } from './decision.ts';
@@ -66,6 +66,13 @@ export interface UIServerHandle {
  * Binds to localhost and serves no authenticated routes by design.
  */
 export function createUIServer(ctx: JevLensContext, config: JevLensConfig = ctx.config): UIServerHandle {
+  if (!isLoopbackHost(config.host)) {
+    throw new RangeError(
+      `JevLens refuses to bind the panel to "${config.host}": it has no authentication, so it is ` +
+        'loopback-only. Use 127.0.0.1 (the default) and reach it over an SSH tunnel if you need it remotely.',
+    );
+  }
+
   const htmlPath = process.env.JEVLENS_UI_HTML
     ? process.env.JEVLENS_UI_HTML
     : join(import.meta.dirname, '..', 'ui', 'index.html');
@@ -133,7 +140,7 @@ async function handle(
     }
 
     if (path === '/api/health') {
-      const stats = await ctx.store.stats(config.confidenceThreshold);
+      const stats = await ctx.store.stats();
       json(res, {
         ok: true,
         version: VERSION,
@@ -151,6 +158,8 @@ async function handle(
         limit,
         offset: num(url.searchParams.get('offset'), 100_000) ?? 0,
         label: url.searchParams.get('label') ?? undefined,
+        runId: url.searchParams.get('run') ?? undefined,
+        id: url.searchParams.get('id') ?? undefined,
         belowThreshold: num(url.searchParams.get('below'), 1),
         since: url.searchParams.get('since') ?? undefined,
         until: url.searchParams.get('until') ?? undefined,
@@ -161,6 +170,11 @@ async function handle(
 
     if (path === '/api/labels') {
       json(res, { labels: await ctx.store.labels(config.confidenceThreshold) });
+      return;
+    }
+
+    if (path === '/api/overview') {
+      json(res, await ctx.store.overview(config.confidenceThreshold));
       return;
     }
 
@@ -210,7 +224,11 @@ async function handle(
     if (path === '/api/export') {
       const format = url.searchParams.get('format') === 'csv' ? 'csv' : 'markdown';
       const limit = num(url.searchParams.get('limit'), MAX_LIMIT) ?? 500;
-      const records = await ctx.store.read({ limit, label: url.searchParams.get('label') ?? undefined });
+      const records = await ctx.store.read({
+        limit,
+        label: url.searchParams.get('label') ?? undefined,
+        runId: url.searchParams.get('run') ?? undefined,
+      });
       const body =
         format === 'csv'
           ? toCsv(records)

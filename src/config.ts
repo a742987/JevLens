@@ -139,3 +139,18 @@ export function saveConfig(storageDir: string, patch: Partial<JevLensConfig>): P
 export function exportsDir(storageDir: string): string {
   return join(storageDir, 'exports');
 }
+
+/**
+ * Addresses the panel may bind to.
+ *
+ * JevLens has no authentication, so the panel is loopback-only by design. Note
+ * that `0.0.0.0` is *not* accepted here even though it looks harmless: the
+ * request handler refuses every non-loopback peer, so binding all interfaces
+ * would only expose a port that answers 403 to everyone who can reach it.
+ */
+export function isLoopbackHost(host: string): boolean {
+  const cleaned = host.replace(/^\[|\]$/g, '').toLowerCase();
+  if (cleaned === 'localhost') return true;
+  if (cleaned === '::1') return true;
+  return /^127(\.\d{1,3}){3}$/.test(cleaned);
+}

@@ -10,6 +10,8 @@ export interface JevLensContext {
   store: TraceStore;
   provider: JevProvider;
   timeoutMs: number;
+  /** Run id applied to every decision when the caller does not supply one. */
+  runId: string | null;
   /** Non-fatal problems (a failed trace write) that the caller may want to log. */
   diagnostics: string[];
 }
@@ -24,6 +26,7 @@ export function createContext(
     store: new TraceStore(config.storageDir, config.maxRecordsPerFile),
     provider: provider ?? createProvider(config, env),
     timeoutMs: timeoutFromEnv(env),
+    runId: sanitizeRunId(env.JEVLENS_RUN_ID),
     diagnostics: [],
   };
 }
@@ -34,6 +37,8 @@ export interface AskInput {
   label?: string;
   model?: string;
   threshold?: number;
+  /** Groups this decision with the others from the same agent run. */
+  runId?: string;
 }
 
 export interface CaptureResult {
@@ -50,6 +55,13 @@ export function sanitizeLabel(value: string | undefined): string {
   return cleaned.slice(0, 60);
 }
 
+/** Run ids are identifiers, not prose: one line, bounded, or nothing at all. */
+export function sanitizeRunId(value: string | undefined | null): string | null {
+  const cleaned = (value ?? '').trim().replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ');
+  if (!cleaned) return null;
+  return cleaned.slice(0, 120);
+}
+
 function clamp01(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.min(1, Math.max(0, value));
@@ -63,10 +75,11 @@ function clamp01(value: number): number {
 export async function captureDecision(
   ctx: JevLensContext,
   input: AskInput,
-  meta: { agent?: string | null } = {},
+  meta: { agent?: string | null; runId?: string | null } = {},
 ): Promise<CaptureResult> {
   const label = sanitizeLabel(input.label);
   const threshold = clamp01(input.threshold ?? ctx.config.confidenceThreshold);
+  const runId = sanitizeRunId(input.runId) ?? sanitizeRunId(meta.runId) ?? ctx.runId;
   const questions = input.questions;
   const state = input.state;
 
@@ -82,7 +95,10 @@ export async function captureDecision(
     questions,
     ...(input.model ? { model: input.model } : {}),
   };
-  const outcome = await decide(ctx.provider, request, { timeoutMs: ctx.timeoutMs });
+  const outcome = await decide(ctx.provider, request, {
+    timeoutMs: ctx.timeoutMs,
+    defaultModel: ctx.config.model,
+  });
   const confidence = summarizeConfidence(outcome.answers, questions, threshold);
 
   const record: TraceRecord = {
@@ -102,6 +118,7 @@ export async function captureDecision(
     hints,
     error: outcome.error,
     agent: meta.agent ?? null,
+    runId,
   };
 
   let file: string | null = null;

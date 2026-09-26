@@ -274,6 +274,7 @@ These are shape matches, not a general secret detector: an opaque `Bearer dXkR9f
 | `JEVLENS_MAX_RECORDS` | records per file before rotation | `5000` |
 | `JEVLENS_TIMEOUT_MS` | Jev request timeout | `20000` |
 | `JEVLENS_MOCK` | force the offline provider | off |
+| `JEVLENS_RUN_ID` | tag every decision this process records with a run id | — |
 | `JEVLENS_INSPECTOR_PORT` | port for `jevlens inspector` | `6274` |
 | `JEVLENS_UI_HTML` | panel HTML path (dev/test hook) | `<package>/ui/index.html` |
 
@@ -290,11 +291,23 @@ These are shape matches, not a general secret detector: an opaque `Bearer dXkR9f
 ```
 jevlens mcp         start the MCP server on stdio (what your agent launches)
 jevlens ui          start the local decision timeline
+jevlens stats       aggregate the trace on disk: tokens, latency, undecided rate, per label
+jevlens doctor      check the install: Node, API key, trace dir, provider, one live Jev call
 jevlens inspector   launch the official MCP Inspector against this server
 jevlens help        usage;  -v / --version prints the version
 ```
 
 Shared flags: `--port <n>`, `--host <addr>`, `--dir <path>`, `--threshold <0..1>`, `--mock`; `jevlens inspector` also takes `--inspector-port <n>`. They sit on top of the precedence chain, so a flag always beats config file and environment.
+
+`jevlens stats` reads what is already on disk and adds nothing to it. `--label <name>` narrows the
+per-label table to one label, and `--json` emits the whole aggregate as machine-readable JSON. Both
+read `--dir` and `--threshold` like everything else.
+
+`jevlens doctor` answers "why is everything coming back mock?" without reading the source: it prints
+one line each for Node, the version, the trace directory, `TYPESAFE_API_KEY`, the provider in use, and
+one real Jev round trip. A missing key is `FAIL` only when live calls were intended — with `--mock` it
+is expected. Lines marked `warn` are normal on a fresh install; `jevlens doctor` exits non-zero only on
+a `FAIL`, and its probe is never written to the trace.
 
 `jevlens inspector` runs the official MCP Inspector against `jevlens mcp` via `npx` and prints the
 `http://127.0.0.1:6274/…` URL (recent Inspector versions add an auth token to it). From there you can
@@ -318,7 +331,7 @@ TypeScript, Node 22.18+ (`engines` is `>=22.18.0`; `npm test` runs the TypeScrip
 Publishing:
 
 ```bash
-npm publish --access public   # prepublishOnly runs a clean build plus the test suite
+npm publish --access public   # prepublishOnly runs a clean build, the type check and the test suite
 ```
 
 ---

@@ -1,21 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { fileURLToPath } from 'node:url';
-
-const here = fileURLToPath(new URL('.', import.meta.url));
-/** Run against the compiled output when it exists, otherwise straight from src. */
-const entry = join(here, '..', 'dist', 'cli.js');
+import { cliEntry } from './helpers.ts';
 
 async function withServer(): Promise<{ client: Client; dir: string; cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(join(tmpdir(), 'jevlens-stdio-'));
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [entry, 'mcp'],
+    args: [cliEntry, 'mcp'],
     cwd: dir,
     env: { ...process.env, JEVLENS_DIR: join(dir, '.jevlens'), TYPESAFE_API_KEY: '', JEVLENS_MOCK: '1' },
     stderr: 'pipe',
@@ -24,6 +21,10 @@ async function withServer(): Promise<{ client: Client; dir: string; cleanup: () 
   await client.connect(transport);
   return { client, dir, cleanup: async () => { await client.close(); await rm(dir, { recursive: true, force: true }); } };
 }
+
+test('the CLI entry resolves to a file that can actually be spawned', () => {
+  assert.ok(existsSync(cliEntry), `missing CLI entry: ${cliEntry}`);
+});
 
 test('a real MCP client over stdio can list, call and read back', async () => {
   const { client, dir, cleanup } = await withServer();

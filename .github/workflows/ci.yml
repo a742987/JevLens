@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # engines is >=22.18.0 because `npm test` needs unflagged type stripping.
+        node-version: ['22.18', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - name: Test the TypeScript sources
+        run: npm test
+      - name: Test the built CLI (what the bin field ships)
+        run: npm test
+        env:
+          JEVLENS_TEST_ENTRY: dist/cli.js

@@ -3,8 +3,11 @@ import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { buildServer } from '../src/mcp-server.ts';
+import { captureDecision, createContext } from '../src/decision.ts';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
-import { contextFor, tempWorkspace, ticketState, triageQuestions } from './helpers.ts';
+import { contextFor, FakeProvider, tempWorkspace, ticketState, triageQuestions } from './helpers.ts';
 
 interface Session {
   client: Client;
@@ -159,5 +162,72 @@ test('jev_export writes a report and returns its path', async () => {
   const csvPayload = JSON.parse((csv.content as { text: string }[])[0]?.text ?? '{}') as { path: string };
   const csvBody = await readFile(csvPayload.path, 'utf8');
   assert.match(csvBody, /^id,ts,label,status/);
+  await workspace.cleanup();
+});
+
+test('jev_export refuses to write outside the workspace', async () => {
+  const workspace = await tempWorkspace();
+  const ctx = contextFor(workspace.config);
+  const server = buildServer(ctx);
+  const client = new Client({ name: 'unit-test-client', version: '0.0.0' });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await server.connect(a);
+  await client.connect(b);
+
+  await client.callTool({ name: 'jev_ask', arguments: { state: ticketState, questions: triageQuestions, label: 'support' } });
+
+  // The tool is callable by a model that has just read untrusted text, so an
+  // arbitrary absolute path would be an arbitrary file overwrite.
+  const outside = join(workspace.root, '..', 'jevlens-escape.md');
+  const refused = await client.callTool({ name: 'jev_export', arguments: { path: outside } });
+  assert.equal(refused.isError, true, 'a path above the workspace is refused');
+  const message = (JSON.parse((refused.content as { text: string }[])[0]?.text ?? '{}') as { error: string }).error;
+  assert.match(message, /refusing to write outside the workspace/);
+  assert.equal(existsSync(outside), false, 'nothing was created');
+
+  const target = join(workspace.config.storageDir, 'exports', 'bug-report.md');
+  const allowed = await client.callTool({ name: 'jev_export', arguments: { path: target } });
+  assert.notEqual(allowed.isError, true, 'the trace directory stays writable');
+  assert.ok(existsSync(target));
+  await workspace.cleanup();
+});
+
+test('run ids group the decisions belonging to one agent run', async () => {
+  const workspace = await tempWorkspace();
+  const ctx = contextFor(workspace.config);
+  const server = buildServer(ctx, { agent: 'test-harness', runId: 'session-fallback' });
+  const client = new Client({ name: 'unit-test-client', version: '0.0.0' });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await server.connect(a);
+  await client.connect(b);
+
+  const first = await client.callTool({
+    name: 'jev_ask',
+    arguments: { state: ticketState, questions: triageQuestions, label: 'support', run_id: 'run-42' },
+  });
+  const explicit = JSON.parse((first.content as { text: string }[])[0]?.text ?? '{}') as { run_id: string; id: string };
+  assert.equal(explicit.run_id, 'run-42', 'an explicit run id is echoed back to the agent');
+
+  const second = await client.callTool({ name: 'jev_ask', arguments: { state: 'next step', questions: triageQuestions } });
+  const inherited = JSON.parse((second.content as { text: string }[])[0]?.text ?? '{}') as { run_id: string; id: string };
+  assert.equal(inherited.run_id, 'session-fallback', 'without one, the session is used');
+
+  const byRun = await client.callTool({ name: 'jev_trace', arguments: { run_id: 'run-42' } });
+  const runRecords = (JSON.parse((byRun.content as { text: string }[])[0]?.text ?? '{}').records ?? []) as { id: string }[];
+  assert.deepEqual(runRecords.map((record) => record.id), [explicit.id]);
+
+  const byId = await client.callTool({ name: 'jev_trace', arguments: { id: inherited.id } });
+  const single = (JSON.parse((byId.content as { text: string }[])[0]?.text ?? '{}').records ?? []) as { id: string }[];
+  assert.deepEqual(single.map((record) => record.id), [inherited.id], 'one decision can be fetched by trace id');
+  await workspace.cleanup();
+});
+
+test('JEVLENS_RUN_ID from the environment labels every decision', async () => {
+  const workspace = await tempWorkspace();
+  const ctx = createContext(workspace.config, { JEVLENS_RUN_ID: 'from-env' }, new FakeProvider());
+  assert.equal((await captureDecision(ctx, { state: 'x', questions: triageQuestions })).record.runId, 'from-env');
+  const overridden = await captureDecision(ctx, { state: 'x', questions: triageQuestions, runId: 'explicit' });
+  assert.equal(overridden.record.runId, 'explicit', 'the call wins over the environment');
+  assert.equal((await captureDecision(ctx, { state: 'x', questions: triageQuestions, runId: '  ' })).record.runId, 'from-env', 'blank is not a run id');
   await workspace.cleanup();
 });

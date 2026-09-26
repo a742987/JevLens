@@ -274,6 +274,7 @@ grep -c '"status":"undecided"' .jevlens/trace-2026-09-21.jsonl
 | `JEVLENS_MAX_RECORDS` | 单个文件轮转前的记录数 | `5000` |
 | `JEVLENS_TIMEOUT_MS` | Jev 请求超时 | `20000` |
 | `JEVLENS_MOCK` | 强制使用离线 provider | 关闭 |
+| `JEVLENS_RUN_ID` | 给本进程记录的每条决策打上一个 run id | — |
 | `JEVLENS_INSPECTOR_PORT` | `jevlens inspector` 的端口 | `6274` |
 | `JEVLENS_UI_HTML` | 面板 HTML 路径（开发/测试钩子） | `<package>/ui/index.html` |
 
@@ -290,11 +291,21 @@ grep -c '"status":"undecided"' .jevlens/trace-2026-09-21.jsonl
 ```
 jevlens mcp         start the MCP server on stdio (what your agent launches)
 jevlens ui          start the local decision timeline
+jevlens stats       aggregate the trace on disk: tokens, latency, undecided rate, per label
+jevlens doctor      check the install: Node, API key, trace dir, provider, one live Jev call
 jevlens inspector   launch the official MCP Inspector against this server
 jevlens help        usage;  -v / --version prints the version
 ```
 
 公共参数：`--port <n>`、`--host <addr>`、`--dir <path>`、`--threshold <0..1>`、`--mock`；`jevlens inspector` 另外接受 `--inspector-port <n>`。它们位于优先级链的最上层，因此命令行参数总是压过配置文件与环境变量。
+
+`jevlens stats` 只读取磁盘上已有的东西，不往里面添加任何内容。`--label <name>` 把分标签表格收窄到一个
+标签，`--json` 则把整份聚合结果输出为机器可读的 JSON。两者同样接受 `--dir` 与 `--threshold`。
+
+`jevlens doctor` 不用读源码就能回答“为什么所有结果都是 mock？”：它对 Node、版本、trace 目录、
+`TYPESAFE_API_KEY`、当前 provider 以及一次真实的 Jev 往返各打印一行。只有在确实打算发起真实调用时，缺失的
+key 才会算作 `FAIL`——带 `--mock` 时它是预期内的。标为 `warn` 的行在全新安装上属正常现象；`jevlens doctor`
+只在出现 `FAIL` 时以非零退出，而它的探测调用永远不会写入 trace。
 
 `jevlens inspector` 通过 `npx` 针对 `jevlens mcp` 启动官方 MCP Inspector，并打印出
 `http://127.0.0.1:6274/…` 地址（较新的 Inspector 版本会在其中附加一个 auth token）。在那里你可以
@@ -318,7 +329,7 @@ TypeScript、Node 22.18+（`engines` 为 `>=22.18.0`；`npm test` 通过 Node �
 发布：
 
 ```bash
-npm publish --access public   # prepublishOnly runs a clean build plus the test suite
+npm publish --access public   # prepublishOnly runs a clean build, the type check and the test suite
 ```
 
 ---

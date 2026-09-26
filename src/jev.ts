@@ -39,12 +39,20 @@ export interface JevReply {
 
 export interface AskOptions {
   timeoutMs?: number;
+  /**
+   * Model the caller would have used, so a call that never came back can still
+   * say what it attempted. This is the configuration's answer; the provider's
+   * own `defaultModel` is the fallback for callers that do not pass one.
+   */
+  defaultModel?: string;
 }
 
 export interface JevProvider {
   readonly kind: ProviderKind;
   /** Why this provider is being used, surfaced in traces and the panel. */
   readonly note: string;
+  /** Model this provider would request, used to label a call that never returned. */
+  readonly defaultModel?: string;
   ask(request: JevRequest, options?: AskOptions): Promise<JevReply>;
 }
 
@@ -143,11 +151,13 @@ function usageOf(value: unknown): JevUsage | null {
 export class LiveJevProvider implements JevProvider {
   readonly kind = 'live' as const;
   readonly note = 'TypeSafe Jev API';
+  readonly defaultModel?: string;
   private readonly client: TypeSafeClient;
   private readonly model?: string;
 
   constructor(options: { apiKey?: string; baseURL?: string; model?: string; timeoutMs?: number } = {}) {
     this.model = options.model;
+    this.defaultModel = options.model;
     this.client = new TypeSafeClient({
       apiKey: options.apiKey ?? process.env.TYPESAFE_API_KEY,
       baseURL: options.baseURL ?? process.env.TYPESAFE_BASE_URL,
@@ -340,9 +350,24 @@ export interface JevOutcome {
   latencyMs: number;
 }
 
+/** Error thrown when the watchdog fires before the provider answers. */
+export class JevTimeoutError extends Error {
+  override readonly name = 'JevTimeoutError';
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number) {
+    super(`Jev did not answer within ${timeoutMs}ms`);
+    this.timeoutMs = timeoutMs;
+  }
+}
+
 /**
  * Fail-open is the iron rule: any provider failure is recorded and degraded into
  * an `undecided` result so the calling agent keeps working.
+ *
+ * The timeout is enforced here as well as in the SDK. Fail-open is worthless if
+ * the call can hang, and honouring the deadline must not depend on a third-party
+ * client remembering to.
  */
 export async function decide(
   provider: JevProvider,
@@ -350,8 +375,10 @@ export async function decide(
   options: AskOptions = {},
 ): Promise<JevOutcome> {
   const started = Date.now();
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const failedModel = request.model ?? options.defaultModel ?? provider.defaultModel ?? 'unknown';
   try {
-    const reply = await provider.ask(request, options);
+    const reply = await withTimeout(provider.ask(request, { timeoutMs }), timeoutMs);
     const missing = Object.keys(request.questions).filter((name) => !reply.answers[name]);
     if (missing.length > 0) {
       for (const name of missing) {
@@ -361,7 +388,7 @@ export async function decide(
       return {
         status: 'undecided',
         provider: provider.kind,
-        model: reply.model,
+        model: reply.model || failedModel,
         answers: reply.answers,
         usage: reply.usage,
         error: { name: 'IncompleteAnswer', message: `Jev returned no answer for: ${missing.join(', ')}` },
@@ -381,12 +408,34 @@ export async function decide(
     return {
       status: 'undecided',
       provider: provider.kind,
-      model: request.model ?? 'unknown',
+      model: failedModel,
       answers: fallbackAnswers(request.questions),
       usage: null,
       error: describeError(error),
       latencyMs: Date.now() - started,
     };
+  }
+}
+
+/**
+ * Races the provider against a watchdog. The losing promise is left to settle on
+ * its own — an in-flight HTTP request cannot be recalled from here — but its
+ * rejection is swallowed so it cannot surface as an unhandled rejection after
+ * the caller has already moved on.
+ */
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
+  let timer: NodeJS.Timeout | undefined;
+  const watchdog = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new JevTimeoutError(timeoutMs)), timeoutMs);
+    // Never hold the event loop open just for a deadline.
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([promise, watchdog]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    promise.catch(() => {});
   }
 }
 

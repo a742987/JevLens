@@ -160,3 +160,161 @@ test('scrub keeps credentials out of traces', () => {
   assert.ok(secretValues({ TYPESAFE_API_KEY: 'tsk_live_1234567890abcdef' }).length === 1);
   assert.ok(secretValues({ PATH: '/usr/bin', HOME: '/home/dev' }).length === 0, 'innocuous env vars are not treated as secrets');
 });
+
+test('a credential-shaped string is masked by its shape alone, without knowing the value', () => {
+  // TypeSafe keys are `tsk_live_…`. The `\b` anchor means a bare `sk` branch can
+  // never match inside `tsk`, so `tsk` has to be listed in its own right —
+  // otherwise the one key this tool actually handles is the one that leaks.
+  const scrubbed = scrub({ note: 'pasted tsk_live_abcdef1234567890 into the prompt' }, []) as { note: string };
+  assert.ok(!scrubbed.note.includes('tsk_live_abcdef1234567890'), `got: ${scrubbed.note}`);
+  assert.match(scrubbed.note, /\[redacted\]/);
+
+  // Quality hints quote the user's own option text, so they are a second path to
+  // disk that a payload-only scrub would miss.
+  const hinted = scrub(
+    { hints: [{ code: 'choice.overlap', message: 'options "a" and "tsk_live_abcdef1234567890" overlap' }], label: 'triage' },
+    [],
+  ) as { hints: { message: string }[]; label: string };
+  assert.ok(!JSON.stringify(hinted).includes('tsk_live_abcdef1234567890'), 'hint messages are scrubbed too');
+  assert.equal(hinted.label, 'triage', 'non-secret fields survive');
+});
+
+test('token counters survive the credential scrub', async () => {
+  // `input_tokens` matches the credential-key pattern. Scrubbing a whole record
+  // without carving out the usage block turns every token figure into
+  // "[redacted]", which reads as a legitimate zero in the aggregates.
+  const workspace = await tempWorkspace();
+  const store = new TraceStore(workspace.config.storageDir, 100);
+  await store.append(makeRecord({ id: 'counted' }));
+  const [stored] = await store.read({ limit: 1 });
+  assert.deepEqual(stored?.response?.usage, { input_tokens: 100, output_tokens: 5 });
+  assert.equal((await store.overview(0.7)).inputTokens, 100);
+
+  // The exemption is for numbers, not for anything sharing the name.
+  const spoofed = scrub({ input_tokens: 'tsk_live_abcdef1234567890' }, []) as Record<string, unknown>;
+  assert.equal(spoofed.input_tokens, '[redacted]', 'a string at a metric key is still a credential');
+  await workspace.cleanup();
+});
+
+test('jevlens stats and overview agree about what is on disk', async () => {
+  const workspace = await tempWorkspace();
+  const store = new TraceStore(workspace.config.storageDir, 100);
+  for (let i = 0; i < 3; i += 1) await store.append(makeRecord({ id: `x${i}`, label: 'triage' }));
+  const stats = await store.stats();
+  const overview = await store.overview(0.7);
+  assert.equal(overview.records, stats.records, 'the two aggregate views cannot disagree');
+  assert.equal(overview.inputTokens, 300);
+  assert.equal(overview.latency.p50, 420);
+  await workspace.cleanup();
+});
+
+test('labels and stats still see records that were rotated out of the newest file', async () => {
+  const workspace = await tempWorkspace();
+  // A cap of 2 forces rotation, so the nine records land in five files.
+  const store = new TraceStore(workspace.config.storageDir, 2);
+  for (let i = 0; i < 9; i += 1) {
+    await store.append(
+      makeRecord({
+        id: `old-${i}`,
+        label: 'legacy-label',
+        ts: `2026-01-01T00:00:0${i}Z`,
+        status: i % 3 === 0 ? 'undecided' : 'answered',
+        confidence: { min: i % 3 === 0 ? 0 : 0.95, mean: 0.5, perQuestion: {}, belowThreshold: [] },
+      }),
+    );
+  }
+  await store.append(makeRecord({ id: 'new', label: 'current-label', ts: '2026-09-20T00:00:00Z' }));
+
+  const labels = await store.labels(0.7);
+  const legacy = labels.find((entry) => entry.label === 'legacy-label');
+  assert.ok(legacy, 'a label that only appears in rotated-away files is still listed');
+  assert.equal(legacy?.count, 9, 'counts are totals, not a truncated page');
+  assert.equal(legacy?.undecided, 3);
+  assert.equal(labels.find((entry) => entry.label === 'current-label')?.count, 1);
+
+  const stats = await store.stats();
+  assert.equal(stats.records, 10);
+  assert.equal(stats.files, 6, 'five rotated files for the old day, plus the newest');
+  assert.equal(stats.oldest, '2026-01-01T00:00:00Z');
+  assert.equal(stats.newest, '2026-09-20T00:00:00Z');
+  assert.ok(stats.bytes > 0, 'byte totals come from the files on disk');
+  await workspace.cleanup();
+});
+
+test('the aggregate index picks up records appended after it was built', async () => {
+  const workspace = await tempWorkspace();
+  const store = new TraceStore(workspace.config.storageDir, 100);
+  await store.append(makeRecord({ id: 'first', label: 'a' }));
+  assert.equal((await store.stats()).records, 1);
+
+  await store.append(makeRecord({ id: 'second', label: 'a' }));
+  const stats = await store.stats();
+  assert.equal(stats.records, 2, 'a cached summary is extended, not frozen');
+  assert.equal((await store.labels(0.7)).find((entry) => entry.label === 'a')?.count, 2);
+
+  // A third label arriving after the aggregates were already built and cached.
+  await store.append(makeRecord({ id: 'third', label: 'b' }));
+  const overview = await store.overview(0.7);
+  assert.equal(overview.records, 3);
+  assert.deepEqual(overview.byLabel.map((entry) => entry.label).sort(), ['a', 'b']);
+  await workspace.cleanup();
+});
+
+test('a torn trailing line is retried once the write completes', async () => {
+  const workspace = await tempWorkspace();
+  const store = new TraceStore(workspace.config.storageDir, 100);
+  await store.append(makeRecord({ id: 'good' }));
+  const file = join(workspace.config.storageDir, `trace-${dateKey()}.jsonl`);
+  const complete = JSON.stringify(makeRecord({ id: 'late' }));
+  await appendFile(file, complete.slice(0, 20), 'utf8');
+  assert.equal((await store.stats()).records, 1, 'a partial line does not count');
+  await appendFile(file, `${complete.slice(20)}\n`, 'utf8');
+  assert.equal((await store.stats()).records, 2, 'the same line is recognised once it is whole');
+  assert.deepEqual((await store.read({ limit: 10 })).map((r) => r.id).sort(), ['good', 'late']);
+  await workspace.cleanup();
+});
+
+test('records can be filtered by run id and by exact trace id', async () => {
+  const workspace = await tempWorkspace();
+  const store = new TraceStore(workspace.config.storageDir, 100);
+  await store.append(makeRecord({ id: 'r1', runId: 'run-a', ts: '2026-01-01T00:00:01Z' }));
+  await store.append(makeRecord({ id: 'r2', runId: 'run-a', ts: '2026-01-01T00:00:02Z' }));
+  await store.append(makeRecord({ id: 'r3', runId: 'run-b', ts: '2026-01-01T00:00:03Z' }));
+  await store.append(makeRecord({ id: 'r4', ts: '2026-01-01T00:00:04Z' }));
+
+  assert.deepEqual((await store.read({ runId: 'run-a' })).map((r) => r.id), ['r2', 'r1'], 'newest first within a run');
+  assert.deepEqual((await store.read({ runId: 'run-b' })).map((r) => r.id), ['r3']);
+  assert.deepEqual((await store.read({ id: 'r4' })).map((r) => r.id), ['r4']);
+  assert.equal((await store.read({ runId: 'run-a', until: '2026-01-01T00:00:01Z' })).length, 1);
+  await workspace.cleanup();
+});
+
+test('overview aggregates tokens, latency and the undecided rate', async () => {
+  const workspace = await tempWorkspace();
+  const store = new TraceStore(workspace.config.storageDir, 100);
+  await store.append(makeRecord({ id: 'a', label: 'triage', latencyMs: 100, ts: '2026-03-01T00:00:00Z' }));
+  await store.append(
+    makeRecord({
+      id: 'b',
+      label: 'triage',
+      latencyMs: 300,
+      ts: '2026-03-01T00:00:01Z',
+      status: 'undecided',
+      confidence: { min: 0, mean: 0, perQuestion: {}, belowThreshold: ['category'] },
+      response: { model: 'jev-1', answers: {}, usage: { input_tokens: 50, output_tokens: 5 } },
+    }),
+  );
+  await store.append(makeRecord({ id: 'c', label: 'router', latencyMs: 200, ts: '2026-03-02T00:00:00Z' }));
+
+  const overview = await store.overview(0.7);
+  assert.equal(overview.records, 3);
+  assert.equal(overview.undecided, 1);
+  assert.equal(overview.flagged, 1);
+  assert.equal(overview.undecidedRate, 0.333);
+  assert.equal(overview.inputTokens, 250, 'two default records at 100 plus the override at 50');
+  assert.equal(overview.latency.p50, 200);
+  assert.equal(overview.latency.max, 300);
+  assert.deepEqual(overview.byDay.map((day) => day.day), ['2026-03-02', '2026-03-01'], 'newest day first');
+  assert.equal(overview.byLabel.find((entry) => entry.label === 'triage')?.count, 2);
+  await workspace.cleanup();
+});

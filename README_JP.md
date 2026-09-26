@@ -274,6 +274,7 @@ grep -c '"status":"undecided"' .jevlens/trace-2026-09-21.jsonl
 | `JEVLENS_MAX_RECORDS` | ローテーションまでの 1 ファイルあたりのレコード数 | `5000` |
 | `JEVLENS_TIMEOUT_MS` | Jev へのリクエストタイムアウト | `20000` |
 | `JEVLENS_MOCK` | オフラインプロバイダーを強制 | オフ |
+| `JEVLENS_RUN_ID` | このプロセスが記録するすべての判断にラン ID を付与 | — |
 | `JEVLENS_INSPECTOR_PORT` | `jevlens inspector` のポート | `6274` |
 | `JEVLENS_UI_HTML` | パネルの HTML パス（開発・テスト用のフック） | `<package>/ui/index.html` |
 
@@ -290,11 +291,23 @@ grep -c '"status":"undecided"' .jevlens/trace-2026-09-21.jsonl
 ```
 jevlens mcp         start the MCP server on stdio (what your agent launches)
 jevlens ui          start the local decision timeline
+jevlens stats       aggregate the trace on disk: tokens, latency, undecided rate, per label
+jevlens doctor      check the install: Node, API key, trace dir, provider, one live Jev call
 jevlens inspector   launch the official MCP Inspector against this server
 jevlens help        usage;  -v / --version prints the version
 ```
 
 共通フラグ: `--port <n>`、`--host <addr>`、`--dir <path>`、`--threshold <0..1>`、`--mock`。`jevlens inspector` ではこれに加えて `--inspector-port <n>` が使えます。これらのフラグは優先順位チェーンの最上位に置かれるため、設定ファイルや環境変数に常に優先します。
+
+`jevlens stats` はディスク上にある既存のデータを読み取るだけで、何も追記しません。`--label <name>` は
+ラベル別の表を 1 つのラベルに絞り込み、`--json` は集計結果全体を機械可読な JSON として出力します。どちらも
+他のコマンドと同様に `--dir` と `--threshold` を受け取ります。
+
+`jevlens doctor` はソースを読まずに「なぜすべて mock で返るのか？」に答えします。Node、バージョン、
+トレースディレクトリ、`TYPESAFE_API_KEY`、使用中のプロバイダー、そして実際に行う 1 回の Jev 往復について、
+それぞれ 1 行を表示します。キーの欠落は、実際の呼び出しを意図していた場合にのみ `FAIL` になります —
+`--mock` 付きであれば想定内です。`warn` の行は新規インストールでは正常な状態です。`jevlens doctor` が
+0 以外で終了するのは `FAIL` があるときだけで、このプローブの呼び出しはトレースに記録されることはありません。
 
 `jevlens inspector` は `npx` 経由で公式の MCP Inspector を `jevlens mcp` に対して起動し、
 `http://127.0.0.1:6274/…` の URL を表示します（最近の Inspector のバージョンでは認証トークンが付加されます）。
@@ -318,7 +331,7 @@ TypeScript、Node 22.18 以上（`engines` は `>=22.18.0`。`npm test` は Node
 公開:
 
 ```bash
-npm publish --access public   # prepublishOnly runs a clean build plus the test suite
+npm publish --access public   # prepublishOnly runs a clean build, the type check and the test suite
 ```
 
 ---

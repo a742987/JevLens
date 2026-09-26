@@ -137,6 +137,11 @@ export interface TraceRecord {
   error?: { name: string; message: string; status?: number } | null;
   /** Name/version of the MCP client that made the call, when known. */
   agent?: string | null;
+  /**
+   * Correlates the decisions belonging to one agent run, so a whole task can be
+   * replayed in order instead of read as unrelated one-offs.
+   */
+  runId?: string | null;
   /** Storage file the record lives in; filled in on read. */
   file?: string;
 }

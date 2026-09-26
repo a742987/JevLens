@@ -1,8 +1,8 @@
-import { appendFile, mkdir, readFile, readdir } from 'node:fs/promises';
+import { appendFile, mkdir, open, readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DEFAULTS } from './config.ts';
 import { scrub, secretValues } from './sanitize.ts';
-import type { Answers, JsonValue, Questions, TraceRecord } from './types.ts';
+import type { JsonValue, TraceRecord, TraceStatus } from './types.ts';
 
 const FILE_RE = /^trace-(\d{4}-\d{2}-\d{2})(?:-(\d+))?\.jsonl$/;
 
@@ -16,6 +16,10 @@ export interface TraceQuery {
   limit?: number;
   offset?: number;
   label?: string;
+  /** Only search for records belonging to this agent run. */
+  runId?: string;
+  /** Only search for records with this exact trace id. */
+  id?: string;
   /** Inclusive ISO-8601 lower bound. */
   since?: string;
   /** Inclusive ISO-8601 upper bound. */
@@ -37,10 +41,64 @@ export interface LabelSummary {
 export interface StoreStats {
   records: number;
   files: number;
+  /** Sum of the trace files' sizes on disk, in bytes. */
   bytes: number;
   dir: string;
   oldest: string | null;
   newest: string | null;
+}
+
+export interface LabelOverview {
+  label: string;
+  count: number;
+  undecided: number;
+  flagged: number;
+}
+
+export interface DayOverview {
+  /** Local-time day key, `YYYY-MM-DD`. */
+  day: string;
+  count: number;
+  undecided: number;
+  flagged: number;
+}
+
+export interface StoreOverview {
+  records: number;
+  undecided: number;
+  flagged: number;
+  threshold: number;
+  /** Share of decisions that came back undecided, in [0, 1]. */
+  undecidedRate: number;
+  inputTokens: number;
+  outputTokens: number;
+  latency: { p50: number; p95: number; max: number };
+  byLabel: LabelOverview[];
+  byDay: DayOverview[];
+}
+
+/** The few fields the aggregate views need, kept instead of the whole record. */
+interface IndexEntry {
+  ts: string;
+  label: string;
+  status: TraceStatus;
+  min: number;
+  latencyMs: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+/**
+ * Per-file aggregate, cached against `(size, mtimeMs)` and extended by reading
+ * only the appended tail. This is what keeps the panel's 3s poll cheap: without
+ * it every refresh re-parses every record ever written.
+ */
+interface FileSummary {
+  size: number;
+  mtimeMs: number;
+  /** Byte offset of the last complete line folded into `index`. */
+  consumed: number;
+  index: IndexEntry[];
 }
 
 function fileName(date: string, part: number): string {
@@ -72,6 +130,7 @@ export class TraceStore {
   private readonly maxRecordsPerFile: number;
   private queue: Promise<unknown> = Promise.resolve();
   private readonly lineCounts = new Map<string, number>();
+  private readonly summaries = new Map<string, FileSummary>();
 
   constructor(dir: string, maxRecordsPerFile: number = DEFAULTS.maxRecordsPerFile) {
     this.dir = dir;
@@ -79,19 +138,10 @@ export class TraceStore {
   }
 
   async append(record: TraceRecord): Promise<string> {
-    const secrets = secretValues();
-    const response = record.response;
-    const safe: TraceRecord = {
-      ...record,
-      request: {
-        ...record.request,
-        state: scrub(record.request.state, secrets),
-        questions: scrub(record.request.questions as unknown as JsonValue, secrets) as unknown as Questions,
-      },
-      response: response
-        ? { ...response, answers: scrub(response.answers as unknown as JsonValue, secrets) as unknown as Answers }
-        : null,
-    };
+    // Scrub the whole record, not just the payload fields: quality hints quote
+    // the user's own option text verbatim, so a credential-shaped string can
+    // reach disk through `hints[].message` just as easily as through `state`.
+    const safe = scrub(record as unknown as JsonValue, secretValues()) as unknown as TraceRecord;
     const line = `${JSON.stringify(safe)}\n`;
     const target = await new Promise<string>((resolveTarget, rejectTarget) => {
       this.queue = this.queue.then(async () => {
@@ -212,6 +262,8 @@ export class TraceStore {
 
   private matches(record: TraceRecord, query: TraceQuery): boolean {
     if (query.label && record.label !== query.label) return false;
+    if (query.id && record.id !== query.id) return false;
+    if (query.runId && (record.runId ?? null) !== query.runId) return false;
     if (query.since && record.ts < query.since) return false;
     if (query.until && record.ts > query.until) return false;
     if (query.belowThreshold !== undefined) {
@@ -220,47 +272,219 @@ export class TraceStore {
     return true;
   }
 
+  /**
+   * Aggregate view of one file, extended incrementally: only the bytes appended
+   * since the last call are parsed, and a torn trailing line is left out of
+   * `consumed` so it is reconsidered once the write completes.
+   */
+  private async summaryFor(name: string): Promise<FileSummary | null> {
+    const path = join(this.dir, name);
+    let info: { size: number; mtimeMs: number };
+    try {
+      const st = await stat(path);
+      info = { size: st.size, mtimeMs: st.mtimeMs };
+    } catch {
+      this.summaries.delete(name);
+      return null;
+    }
+
+    const hit = this.summaries.get(name);
+    if (hit && hit.size === info.size && hit.mtimeMs === info.mtimeMs) return hit;
+
+    // A truncating rewrite invalidates the prefix we already folded in.
+    const base = hit && info.size >= hit.consumed ? hit : { consumed: 0, index: [] as IndexEntry[] };
+    const text = await readRange(path, base.consumed, info.size - base.consumed);
+    if (text === null) {
+      this.summaries.delete(name);
+      return null;
+    }
+
+    const lastNewline = text.lastIndexOf('\n');
+    const complete = lastNewline >= 0 ? text.slice(0, lastNewline + 1) : '';
+    const index = base.index.slice();
+    for (const line of complete.split('\n')) {
+      const entry = indexOfLine(line);
+      if (entry) index.push(entry);
+    }
+    const summary: FileSummary = {
+      size: info.size,
+      mtimeMs: info.mtimeMs,
+      consumed: base.consumed + Buffer.byteLength(complete, 'utf8'),
+      index,
+    };
+    this.summaries.set(name, summary);
+    return summary;
+  }
+
+  /** Per-label totals over the whole store, not just the most recent page. */
   async labels(threshold: number = DEFAULTS.confidenceThreshold): Promise<LabelSummary[]> {
-    const all = await this.read({ limit: 5000 });
     const byLabel = new Map<string, LabelSummary>();
-    for (const record of all) {
-      const entry = byLabel.get(record.label) ?? {
-        label: record.label,
-        count: 0,
-        latest: record.ts,
-        undecided: 0,
-        lowConfidence: 0,
-      };
-      entry.count += 1;
-      if (record.ts > entry.latest) entry.latest = record.ts;
-      if (record.status === 'undecided') entry.undecided += 1;
-      if (record.status !== 'undecided' && record.confidence.min < threshold) entry.lowConfidence += 1;
-      byLabel.set(record.label, entry);
+    for (const file of await this.files()) {
+      const summary = await this.summaryFor(file.name);
+      if (!summary) continue;
+      for (const entry of summary.index) {
+        const existing = byLabel.get(entry.label) ?? {
+          label: entry.label,
+          count: 0,
+          latest: entry.ts,
+          undecided: 0,
+          lowConfidence: 0,
+        };
+        existing.count += 1;
+        if (entry.ts > existing.latest) existing.latest = entry.ts;
+        if (entry.status === 'undecided') existing.undecided += 1;
+        else if (entry.min < threshold) existing.lowConfidence += 1;
+        byLabel.set(entry.label, existing);
+      }
     }
     return [...byLabel.values()].sort((a, b) => (a.latest < b.latest ? 1 : -1));
   }
 
-  async stats(threshold: number = DEFAULTS.confidenceThreshold): Promise<StoreStats> {
+  async stats(): Promise<StoreStats> {
     const files = await this.files();
     let records = 0;
     let bytes = 0;
     let oldest: string | null = null;
     let newest: string | null = null;
     for (const file of files) {
-      const found = await this.readFileName(file.name);
-      records += found.length;
-      for (const record of found) {
-        bytes += JSON.stringify(record).length;
-        if (!oldest || record.ts < oldest) oldest = record.ts;
-        if (!newest || record.ts > newest) newest = record.ts;
+      const summary = await this.summaryFor(file.name);
+      if (!summary) continue;
+      // Sizes come from stat: re-serialising every record just to count bytes
+      // was the single most expensive thing the panel did on each 3s poll.
+      bytes += summary.size;
+      records += summary.index.length;
+      for (const entry of summary.index) {
+        if (!oldest || entry.ts < oldest) oldest = entry.ts;
+        if (!newest || entry.ts > newest) newest = entry.ts;
       }
     }
-    void threshold;
     return { records, files: files.length, bytes, dir: this.dir, oldest, newest };
+  }
+
+  /** Drop cached aggregates, e.g. after files are removed behind our back. */
+  invalidate(): void {
+    this.summaries.clear();
+    this.lineCounts.clear();
+  }
+
+  /**
+   * Whole-store aggregates computed from the lightweight index, so reporting on
+   * two weeks of decisions costs no more than reporting on ten.
+   */
+  async overview(threshold: number = DEFAULTS.confidenceThreshold): Promise<StoreOverview> {
+    const entries: IndexEntry[] = [];
+    for (const file of await this.files()) {
+      const summary = await this.summaryFor(file.name);
+      if (summary) entries.push(...summary.index);
+    }
+
+    let undecided = 0;
+    let flagged = 0;
+    let inputTokens = 0;
+    let outputTokens = 0;
+    const latencies: number[] = [];
+    const byLabel = new Map<string, LabelOverview>();
+    const byDay = new Map<string, DayOverview>();
+
+    for (const entry of entries) {
+      const isUndecided = entry.status === 'undecided';
+      const isFlagged = isUndecided || entry.min < threshold;
+      if (isUndecided) undecided += 1;
+      if (isFlagged) flagged += 1;
+      inputTokens += entry.inputTokens;
+      outputTokens += entry.outputTokens;
+      if (entry.latencyMs > 0) latencies.push(entry.latencyMs);
+
+      const day = entry.ts.slice(0, 10);
+      const label = byLabel.get(entry.label) ?? { label: entry.label, count: 0, undecided: 0, flagged: 0 };
+      label.count += 1;
+      if (isUndecided) label.undecided += 1;
+      if (isFlagged) label.flagged += 1;
+      byLabel.set(entry.label, label);
+
+      const bucket = byDay.get(day) ?? { day, count: 0, undecided: 0, flagged: 0 };
+      bucket.count += 1;
+      if (isUndecided) bucket.undecided += 1;
+      if (isFlagged) bucket.flagged += 1;
+      byDay.set(day, bucket);
+    }
+
+    latencies.sort((a, b) => a - b);
+    return {
+      records: entries.length,
+      undecided,
+      flagged,
+      threshold,
+      undecidedRate: entries.length ? round3(undecided / entries.length) : 0,
+      inputTokens,
+      outputTokens,
+      latency: {
+        p50: percentile(latencies, 0.5),
+        p95: percentile(latencies, 0.95),
+        max: latencies.length ? (latencies[latencies.length - 1] as number) : 0,
+      },
+      byLabel: [...byLabel.values()].sort((a, b) => b.count - a.count),
+      byDay: [...byDay.values()].sort((a, b) => (a.day < b.day ? 1 : -1)),
+    };
   }
 
   /** Drain pending writes before process exit. */
   async flush(): Promise<void> {
     await this.queue;
+  }
+}
+
+function round3(value: number): number {
+  return Math.round(value * 1000) / 1000;
+}
+
+/** Nearest-rank percentile over an already-sorted sample. */
+function percentile(sorted: number[], fraction: number): number {
+  if (!sorted.length) return 0;
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(fraction * sorted.length) - 1));
+  return sorted[index] as number;
+}
+
+/** Read `[start, start + length)` of a file as UTF-8, or null if it vanished. */
+async function readRange(path: string, start: number, length: number): Promise<string | null> {
+  if (length <= 0) return '';
+  if (start === 0) {
+    try {
+      return await readFile(path, 'utf8');
+    } catch {
+      return null;
+    }
+  }
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(path, 'r');
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, start);
+    return buffer.subarray(0, bytesRead).toString('utf8');
+  } catch {
+    return null;
+  } finally {
+    await handle?.close();
+  }
+}
+
+function indexOfLine(line: string): IndexEntry | null {
+  if (!line.trim()) return null;
+  try {
+    const parsed = JSON.parse(line) as Partial<TraceRecord>;
+    if (!parsed || typeof parsed.id !== 'string' || typeof parsed.ts !== 'string') return null;
+    const num = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
+    return {
+      ts: parsed.ts,
+      label: typeof parsed.label === 'string' ? parsed.label : 'default',
+      status: parsed.status === 'undecided' ? 'undecided' : 'answered',
+      min: num(parsed.confidence?.min),
+      latencyMs: num(parsed.latencyMs),
+      inputTokens: num(parsed.response?.usage?.input_tokens),
+      outputTokens: num(parsed.response?.usage?.output_tokens),
+    };
+  } catch {
+    /* tolerate a torn line from a killed process */
+    return null;
   }
 }
