@@ -68,6 +68,17 @@ function clamp01(value: number): number {
 }
 
 /**
+ * Diagnostics are best-effort chatter for a caller that never reads them, so
+ * they are capped: a long-lived MCP server hitting a broken trace dir must not
+ * grow them without bound.
+ */
+const MAX_DIAGNOSTICS = 100;
+
+function noteDiagnostic(ctx: JevLensContext, message: string): void {
+  if (ctx.diagnostics.length < MAX_DIAGNOSTICS) ctx.diagnostics.push(message);
+}
+
+/**
  * One decision: static question checks, the Jev call, and the trace write.
  * Nothing here is allowed to throw at the caller — a failed trace or a failed
  * Jev call still produces a usable `undecided` result.
@@ -87,7 +98,7 @@ export async function captureDecision(
   try {
     hints = analyseQuestions(questions, { overlapThreshold: ctx.config.overlapThreshold });
   } catch (error) {
-    ctx.diagnostics.push(`quality check failed: ${String(error)}`);
+    noteDiagnostic(ctx, `quality check failed: ${String(error)}`);
   }
 
   const request: JevRequest = {
@@ -127,7 +138,7 @@ export async function captureDecision(
     file = await ctx.store.append(record);
     wrote = true;
   } catch (error) {
-    ctx.diagnostics.push(`trace write failed: ${String(error)}`);
+    noteDiagnostic(ctx, `trace write failed: ${String(error)}`);
   }
 
   return { record, file, wrote, hints };

@@ -52,7 +52,7 @@ The panel then shows the mock provider badge (`mock`) on every record, so you ne
 
 ## Wiring
 
-JevLens is a plain stdio MCP server. The only secret, `TYPESAFE_API_KEY`, is read from the environment and is never written to config files, traces or exports.
+JevLens is a plain stdio MCP server. The only secret — `TYPESAFE_API_KEY`, or `CLM_API_KEY` for CLM — is read from the environment or the `--api-key` flag and is never written to config files, traces or exports. A custom endpoint can be set with `--base-url`, an environment variable, or the config file's `baseUrl`.
 
 <details>
 <summary><b>Claude Code</b></summary>
@@ -261,6 +261,48 @@ These are shape matches, not a general secret detector: an opaque `Bearer dXkR9f
 
 ---
 
+## Using a self-hosted CLM (CLM-8B)
+
+JevLens is not tied to the cloud. [Contrastive-LM's CLM-8B](https://github.com/Contrastive-LM/CLM),
+served locally via `clm-serve`, exposes a **TypeSafe-compatible** `/v1/systemone` endpoint, and
+JevLens can use it as the decision backend with no TypeSafe API key at all:
+
+```bash
+clm-serve &                                   # listens on http://127.0.0.1:8700 by default
+npx -y jevlens doctor --provider clm          # expect [ok] provider  CLM server (clm-latest …)
+```
+
+Add one argument when registering the MCP server:
+
+```json
+{ "mcpServers": { "jevlens": { "command": "npx", "args": ["-y", "jevlens", "mcp", "--provider", "clm"] } } }
+```
+
+How the backend is picked, highest precedence first: `--provider` → `JEVLENS_PROVIDER` → the
+`"provider"` key in the config file.
+
+- `auto` (default): call TypeSafe Jev when `TYPESAFE_API_KEY` is set; otherwise call the local
+  CLM server when `CLM_BASE_URL` is set; fall back to the offline mock provider otherwise.
+- `live`: TypeSafe Jev (needs the key).
+- `clm`: a self-hosted CLM server. `CLM_BASE_URL` overrides the address (default
+  `http://127.0.0.1:8700`); `CLM_API_KEY` is only needed when the server expects a bearer token;
+  the configured `model` (or `TYPESAFE_DEFAULT_MODEL`) is sent as the request's `model`, default
+  `clm-latest`.
+
+Address and key, three ways (highest precedence first): the `--base-url` / `--api-key` flags →
+the environment variables → the config file's `baseUrl`. The key lives in memory and the
+environment only; the config file stays URL-only:
+
+```bash
+npx -y jevlens mcp --provider clm --base-url http://10.0.0.8:9100 --api-key "$CLM_API_KEY"
+```
+
+CLM shares Jev's question and answer format, so traces, the panel, exports and question-quality
+hints behave identically for both backends; CLM records carry a `clm` chip in the panel, and
+`jevlens doctor` stops demanding an API key in CLM mode.
+
+---
+
 ## Configuration
 
 | Environment | Purpose | Default |
@@ -268,6 +310,9 @@ These are shape matches, not a general secret detector: an opaque `Bearer dXkR9f
 | `TYPESAFE_API_KEY` | Jev API key (environment only; never persisted) | — |
 | `TYPESAFE_BASE_URL` | Jev endpoint override | SDK default |
 | `TYPESAFE_DEFAULT_MODEL` | model requested for every call | provider default |
+| `CLM_BASE_URL` | use a self-hosted CLM server instead (e.g. CLM-8B) | — |
+| `CLM_API_KEY` | bearer token for the CLM server (only if it asks for one) | — |
+| `JEVLENS_PROVIDER` | `auto` / `live` / `clm` — pin the backend | `auto` |
 | `JEVLENS_DIR` | trace directory | `./.jevlens` |
 | `JEVLENS_PORT` / `JEVLENS_HOST` | panel bind | `8787` / `127.0.0.1` |
 | `JEVLENS_CONFIDENCE_THRESHOLD` | alert threshold | `0.7` |
@@ -278,7 +323,7 @@ These are shape matches, not a general secret detector: an opaque `Bearer dXkR9f
 | `JEVLENS_INSPECTOR_PORT` | port for `jevlens inspector` | `6274` |
 | `JEVLENS_UI_HTML` | panel HTML path (dev/test hook) | `<package>/ui/index.html` |
 
-`.jevlens/config.json` holds the same knobs (`confidenceThreshold`, `storageDir`, `host`, `port`, `maxRecordsPerFile`, `model`, `mock`, `overlapThreshold`). Precedence: built-in defaults < config file < environment < CLI flags.
+`.jevlens/config.json` holds the same knobs (`confidenceThreshold`, `storageDir`, `host`, `port`, `maxRecordsPerFile`, `model`, `mock`, `provider`, `baseUrl`, `overlapThreshold`). Precedence: built-in defaults < config file < environment < CLI flags.
 
 ```json
 { "confidenceThreshold": 0.8, "maxRecordsPerFile": 2000, "overlapThreshold": 0.55 }
@@ -297,7 +342,7 @@ jevlens inspector   launch the official MCP Inspector against this server
 jevlens help        usage;  -v / --version prints the version
 ```
 
-Shared flags: `--port <n>`, `--host <addr>`, `--dir <path>`, `--threshold <0..1>`, `--mock`; `jevlens inspector` also takes `--inspector-port <n>`. They sit on top of the precedence chain, so a flag always beats config file and environment.
+Shared flags: `--port <n>`, `--host <addr>`, `--dir <path>`, `--threshold <0..1>`, `--mock`, `--provider <auto|live|clm>`, `--base-url <url>`, `--api-key <key>`; `jevlens inspector` also takes `--inspector-port <n>`. They sit on top of the precedence chain, so a flag always beats config file and environment.
 
 `jevlens stats` reads what is already on disk and adds nothing to it. `--label <name>` narrows the
 per-label table to one label, and `--json` emits the whole aggregate as machine-readable JSON. Both

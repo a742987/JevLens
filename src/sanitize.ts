@@ -27,8 +27,13 @@ function isCredentialKey(key: string, value: JsonValue): boolean {
  * `tsk_live_…`, and the `\b` anchor means a bare `sk` alternative can never
  * match inside it — without `tsk` the one key this tool actually handles is the
  * one key that slips through.
+ *
+ * The prefix must be followed by a `_` or `-` delimiter: real keys almost always
+ * carry one (`tsk_live_…`, `sk-proj-…`, `ghp_…`, `xoxb-…`), while requiring it
+ * spares ordinary words that merely start with a short prefix, like
+ * `skills_assessment` or `airconditioning`, from being swallowed whole.
  */
-const LOOKS_LIKE_KEY = /\b(tsk|sk|pk|pat|ghp|gho|ghs|xoxb|xoxp|ai)[A-Za-z0-9_-]{12,}\b/g;
+const LOOKS_LIKE_KEY = /\b(?:tsk|sk|pk|pat|ghp|gho|ghs|xoxb|xoxp|ai)[_-][A-Za-z0-9_-]{12,}\b/g;
 
 /** Environment values that must never reach disk. */
 export function secretValues(env: NodeJS.ProcessEnv = process.env): string[] {

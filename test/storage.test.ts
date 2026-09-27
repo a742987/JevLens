@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { appendFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { DEFAULTS, loadConfig, saveConfig } from '../src/config.ts';
+import { DEFAULTS, isLoopbackHost, loadConfig, saveConfig } from '../src/config.ts';
 import { TraceStore, dateKey } from '../src/storage.ts';
 import { scrub, secretValues } from '../src/sanitize.ts';
 import type { Questions, TraceRecord } from '../src/types.ts';
@@ -113,6 +113,20 @@ test('tolerates a torn line left by a killed process', async () => {
   await workspace.cleanup();
 });
 
+test('a line that parses but is not a record is skipped, never crashes a query', async () => {
+  const workspace = await tempWorkspace();
+  const store = new TraceStore(workspace.config.storageDir, 100);
+  await store.append(makeRecord({ id: 'good' }));
+  const file = join(workspace.config.storageDir, `trace-${dateKey()}.jsonl`);
+  // Valid JSON with an id — the old read accepted it and then dereferenced
+  // `request`/`confidence` unguarded, taking the panel and exports down with it.
+  await appendFile(file, `${JSON.stringify({ id: 'bogus', ts: 'x' })}\n`, 'utf8');
+  assert.deepEqual((await store.read({ limit: 10, belowThreshold: 1 })).map((r) => r.id), ['good']);
+  assert.deepEqual((await store.read({ limit: 10, includePayload: false })).map((r) => r.id), ['good']);
+  assert.equal((await store.stats()).records, 1);
+  await workspace.cleanup();
+});
+
 test('reading an empty or missing directory is not an error', async () => {
   const workspace = await tempWorkspace();
   const store = new TraceStore(join(workspace.root, 'nope'));
@@ -135,8 +149,21 @@ test('config: defaults, file, then environment win', async () => {
   assert.equal(loadConfig(workspace.root, { JEVLENS_MOCK: '1' }).mock, true);
   assert.equal(loadConfig(workspace.root, { JEVLENS_PORT: '9000' }).port, 9000);
   assert.equal(loadConfig(workspace.root, { JEVLENS_CONFIDENCE_THRESHOLD: 'nonsense' }).confidenceThreshold, 0.42);
+  // A nonsense value from the config file itself falls back to the default
+  // rather than to a degenerate bound (clamp(NaN) used to return 0).
+  saveConfig(defaults.storageDir, { confidenceThreshold: 'nonsense' as unknown as number });
+  assert.equal(loadConfig(workspace.root, {}).confidenceThreshold, DEFAULTS.confidenceThreshold);
   assert.equal(loadConfig(workspace.root, {}).storageDir.includes('config.json'), false);
   await workspace.cleanup();
+});
+
+test('isLoopbackHost checks octets, not just the digit count', () => {
+  for (const host of ['127.0.0.1', 'localhost', '::1', '127.4.5.6']) {
+    assert.equal(isLoopbackHost(host), true, `${host} is loopback`);
+  }
+  for (const host of ['127.999.0.1', '0.0.0.0', '192.168.1.20', 'example.com']) {
+    assert.equal(isLoopbackHost(host), false, `${host} is not a bindable loopback address`);
+  }
 });
 
 test('scrub keeps credentials out of traces', () => {
@@ -159,6 +186,13 @@ test('scrub keeps credentials out of traces', () => {
   assert.equal((scrubbed.nested as Record<string, unknown>).Authorization, '[redacted]');
   assert.ok(secretValues({ TYPESAFE_API_KEY: 'tsk_live_1234567890abcdef' }).length === 1);
   assert.ok(secretValues({ PATH: '/usr/bin', HOME: '/home/dev' }).length === 0, 'innocuous env vars are not treated as secrets');
+});
+
+test('ordinary words that merely start with a key prefix survive the scrub', () => {
+  // Without the delimiter requirement after the prefix, `skills_assessment`
+  // (sk…) and `airconditioning` (ai…) were swallowed whole.
+  const kept = scrub({ note: 'skills_assessment plus airconditioning stay readable' }, []) as { note: string };
+  assert.equal(kept.note, 'skills_assessment plus airconditioning stay readable');
 });
 
 test('a credential-shaped string is masked by its shape alone, without knowing the value', () => {

@@ -92,7 +92,7 @@ export type Answer = ChoiceAnswer | ScoreAnswer | NoulAnswer;
 export type Answers = Record<string, Answer>;
 
 export type TraceStatus = 'answered' | 'undecided';
-export type ProviderKind = 'live' | 'mock';
+export type ProviderKind = 'live' | 'mock' | 'clm';
 
 export interface TraceRequest {
   state: JsonValue;

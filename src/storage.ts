@@ -12,6 +12,12 @@ export function dateKey(date: Date = new Date()): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
+/** `dateKey` of a stored timestamp, falling back to the raw UTC prefix if unparseable. */
+function dayKeyOf(ts: string): string {
+  const date = new Date(ts);
+  return Number.isNaN(date.getTime()) ? ts.slice(0, 10) : dateKey(date);
+}
+
 export interface TraceQuery {
   limit?: number;
   offset?: number;
@@ -103,6 +109,34 @@ interface FileSummary {
 
 function fileName(date: string, part: number): string {
   return part <= 1 ? `trace-${date}.jsonl` : `trace-${date}-${part}.jsonl`;
+}
+
+/**
+ * The fields every reader of a record dereferences unguarded (`matches`,
+ * `stripPayload`, the markdown/CSV exporters). A line missing any of them is
+ * treated as garbage rather than being passed on to crash a whole query.
+ */
+function isRecord(value: unknown): value is TraceRecord {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Partial<TraceRecord>;
+  return (
+    typeof record.id === 'string' &&
+    typeof record.ts === 'string' &&
+    typeof record.label === 'string' &&
+    (record.status === 'answered' || record.status === 'undecided') &&
+    typeof record.latencyMs === 'number' &&
+    record.request !== null &&
+    typeof record.request === 'object' &&
+    record.request.questions !== null &&
+    typeof record.request.questions === 'object' &&
+    record.confidence !== null &&
+    typeof record.confidence === 'object' &&
+    typeof record.confidence.min === 'number' &&
+    Number.isFinite(record.confidence.min) &&
+    typeof record.confidence.mean === 'number' &&
+    Number.isFinite(record.confidence.mean) &&
+    Array.isArray(record.hints)
+  );
 }
 
 function summarizeState(state: JsonValue): JsonValue {
@@ -223,8 +257,12 @@ export class TraceStore {
     for (const line of raw.split('\n')) {
       if (!line.trim()) continue;
       try {
-        const parsed = JSON.parse(line) as TraceRecord;
-        if (parsed && typeof parsed === 'object' && typeof parsed.id === 'string') {
+        const parsed: unknown = JSON.parse(line);
+        // A line that parses but is not a complete record (hand-edited, written
+        // by another tool, or from a newer format) is skipped exactly like a
+        // torn one: every reader below dereferences `request` and `confidence`
+        // unguarded, so a half-record would take the whole query down.
+        if (isRecord(parsed)) {
           parsed.file = name;
           records.push(parsed);
         }
@@ -395,7 +433,10 @@ export class TraceStore {
       outputTokens += entry.outputTokens;
       if (entry.latencyMs > 0) latencies.push(entry.latencyMs);
 
-      const day = entry.ts.slice(0, 10);
+      // Bucket by the same local day key the file rotation uses, not by the UTC
+      // prefix of the ISO timestamp: east of UTC the two disagree about which
+      // day a midnight-adjacent decision belongs to.
+      const day = dayKeyOf(entry.ts);
       const label = byLabel.get(entry.label) ?? { label: entry.label, count: 0, undecided: 0, flagged: 0 };
       label.count += 1;
       if (isUndecided) label.undecided += 1;
@@ -473,6 +514,17 @@ function indexOfLine(line: string): IndexEntry | null {
   try {
     const parsed = JSON.parse(line) as Partial<TraceRecord>;
     if (!parsed || typeof parsed.id !== 'string' || typeof parsed.ts !== 'string') return null;
+    // Same bar as `isRecord`, so the aggregates can never count a line that
+    // the query path would refuse — the two views must agree about the store.
+    if (
+      typeof parsed.label !== 'string' ||
+      (parsed.status !== 'answered' && parsed.status !== 'undecided') ||
+      !parsed.confidence ||
+      typeof parsed.confidence.min !== 'number' ||
+      !Number.isFinite(parsed.confidence.min)
+    ) {
+      return null;
+    }
     const num = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
     return {
       ts: parsed.ts,

@@ -52,7 +52,7 @@ npx -y jevlens ui --mock --port 8787
 
 ## 接続
 
-JevLens はプレーンな stdio MCP サーバーです。唯一のシークレットである `TYPESAFE_API_KEY` は環境から読み込まれ、設定ファイル、トレース、エクスポートに書き込まれることはありません。
+JevLens はプレーンな stdio MCP サーバーです。唯一のシークレット（`TYPESAFE_API_KEY`、CLM なら `CLM_API_KEY`）は環境変数または `--api-key` フラグから読み込まれ、設定ファイル、トレース、エクスポートに書き込まれることはありません。カスタムエンドポイントは `--base-url`、環境変数、設定ファイルの `baseUrl` で指定できます。
 
 <details>
 <summary><b>Claude Code</b></summary>
@@ -261,6 +261,47 @@ grep -c '"status":"undecided"' .jevlens/trace-2026-09-21.jsonl
 
 ---
 
+## 自己ホスト CLM（CLM-8B）の利用
+
+JevLens はクラウドに縛られません。[Contrastive-LM の CLM-8B](https://github.com/Contrastive-LM/CLM) は
+`clm-serve` 経由で **TypeSafe 互換**の `/v1/systemone` エンドポイントをローカルに公開し、JevLens は
+TypeSafe の API キーなしでそれを判断バックエンドとして使えます:
+
+```bash
+clm-serve &                                   # デフォルトで http://127.0.0.1:8700 をリッスン
+npx -y jevlens doctor --provider clm          # [ok] provider  CLM server (clm-latest …) と表示されるはず
+```
+
+MCP サーバーの登録時に引数を 1 つ追加するだけです:
+
+```json
+{ "mcpServers": { "jevlens": { "command": "npx", "args": ["-y", "jevlens", "mcp", "--provider", "clm"] } } }
+```
+
+バックエンドの選び方（優先度の高い順）: `--provider` → `JEVLENS_PROVIDER` → 設定ファイルの `"provider"`。
+
+- `auto`（デフォルト）: `TYPESAFE_API_KEY` があれば TypeSafe Jev を呼びます。なければ
+  `CLM_BASE_URL` が設定されていればローカルの CLM を呼び、どちらもなければオフラインの
+  mock プロバイダーにフォールバックします。
+- `live`: TypeSafe Jev（キーが必要）。
+- `clm`: 自己ホストの CLM サーバー。`CLM_BASE_URL` でアドレスを上書き（デフォルト
+  `http://127.0.0.1:8700`）。`CLM_API_KEY` はサーバーが bearer トークンを要求する場合のみ必要。
+  設定された `model`（または `TYPESAFE_DEFAULT_MODEL`）はリクエストの `model` として送信され、
+  デフォルトは `clm-latest` です。
+
+アドレスとキーの指定方法（優先度の高い順）: `--base-url` / `--api-key` フラグ → 環境変数 →
+設定ファイルの `baseUrl`。キーはメモリと環境変数だけに存在し、設定ファイルは URL だけを保持します:
+
+```bash
+npx -y jevlens mcp --provider clm --base-url http://10.0.0.8:9100 --api-key "$CLM_API_KEY"
+```
+
+CLM は Jev と同じ質問・回答フォーマットを共有するため、トレース・パネル・エクスポート・
+質問品質ヒントは両バックエンドで同一に動作します。パネルでは CLM のレコードに `clm` バッジが付き、
+CLM モードでは `jevlens doctor` は API キーを要求しなくなります。
+
+---
+
 ## 設定
 
 | 環境変数 | 用途 | デフォルト |
@@ -268,6 +309,9 @@ grep -c '"status":"undecided"' .jevlens/trace-2026-09-21.jsonl
 | `TYPESAFE_API_KEY` | Jev の API キー（環境のみ。永続化されることはありません） | — |
 | `TYPESAFE_BASE_URL` | Jev のエンドポイントの上書き | SDK のデフォルト |
 | `TYPESAFE_DEFAULT_MODEL` | すべての呼び出しで要求されるモデル | プロバイダーのデフォルト |
+| `CLM_BASE_URL` | 自己ホストの CLM サーバーを使用（例: CLM-8B） | — |
+| `CLM_API_KEY` | CLM サーバーの bearer トークン（要求された場合のみ） | — |
+| `JEVLENS_PROVIDER` | `auto` / `live` / `clm` — バックエンドを固定 | `auto` |
 | `JEVLENS_DIR` | トレースディレクトリ | `./.jevlens` |
 | `JEVLENS_PORT` / `JEVLENS_HOST` | パネルのバインド | `8787` / `127.0.0.1` |
 | `JEVLENS_CONFIDENCE_THRESHOLD` | アラートの閾値 | `0.7` |
@@ -278,7 +322,7 @@ grep -c '"status":"undecided"' .jevlens/trace-2026-09-21.jsonl
 | `JEVLENS_INSPECTOR_PORT` | `jevlens inspector` のポート | `6274` |
 | `JEVLENS_UI_HTML` | パネルの HTML パス（開発・テスト用のフック） | `<package>/ui/index.html` |
 
-`.jevlens/config.json` にも同じ設定項目（`confidenceThreshold`、`storageDir`、`host`、`port`、`maxRecordsPerFile`、`model`、`mock`、`overlapThreshold`）があります。優先順位: 組み込みのデフォルト < 設定ファイル < 環境変数 < CLI フラグ。
+`.jevlens/config.json` にも同じ設定項目（`confidenceThreshold`、`storageDir`、`host`、`port`、`maxRecordsPerFile`、`model`、`mock`、`provider`、`baseUrl`、`overlapThreshold`）があります。優先順位: 組み込みのデフォルト < 設定ファイル < 環境変数 < CLI フラグ。
 
 ```json
 { "confidenceThreshold": 0.8, "maxRecordsPerFile": 2000, "overlapThreshold": 0.55 }
@@ -297,7 +341,7 @@ jevlens inspector   launch the official MCP Inspector against this server
 jevlens help        usage;  -v / --version prints the version
 ```
 
-共通フラグ: `--port <n>`、`--host <addr>`、`--dir <path>`、`--threshold <0..1>`、`--mock`。`jevlens inspector` ではこれに加えて `--inspector-port <n>` が使えます。これらのフラグは優先順位チェーンの最上位に置かれるため、設定ファイルや環境変数に常に優先します。
+共通フラグ: `--port <n>`、`--host <addr>`、`--dir <path>`、`--threshold <0..1>`、`--mock`、`--provider <auto|live|clm>`、`--base-url <url>`、`--api-key <key>`。`jevlens inspector` ではこれに加えて `--inspector-port <n>` が使えます。これらのフラグは優先順位チェーンの最上位に置かれるため、設定ファイルや環境変数に常に優先します。
 
 `jevlens stats` はディスク上にある既存のデータを読み取るだけで、何も追記しません。`--label <name>` は
 ラベル別の表を 1 つのラベルに絞り込み、`--json` は集計結果全体を機械可読な JSON として出力します。どちらも

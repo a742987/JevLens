@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isLoopbackHost, loadConfig, DEFAULTS, type JevLensConfig } from './config.ts';
 import { createContext, uiUrl } from './decision.ts';
-import { decide, timeoutFromEnv } from './jev.ts';
+import { decide, providerSelection, timeoutFromEnv } from './jev.ts';
 import { startMcpServer } from './mcp-server.ts';
 import { createUIServer } from './ui-server.ts';
 import { VERSION } from './version.ts';
@@ -14,6 +14,9 @@ const OPTIONS = {
   host: { type: 'string' },
   dir: { type: 'string' },
   threshold: { type: 'string' },
+  provider: { type: 'string' },
+  'base-url': { type: 'string' },
+  'api-key': { type: 'string' },
   'inspector-port': { type: 'string' },
   label: { type: 'string' },
   json: { type: 'boolean' },
@@ -36,6 +39,12 @@ Options
   --host <addr>       UI bind address (loopback only: 127.0.0.1, 127.x.x.x, ::1, localhost)
   --dir <path>        trace directory (default ./.jevlens)
   --threshold <0..1>  confidence alert threshold (default ${DEFAULTS.confidenceThreshold})
+  --provider <kind>   backend to call: auto (default), live (TypeSafe Jev), clm (self-hosted
+                      CLM server, e.g. CLM-8B via clm-serve)
+  --base-url <url>    override the backend endpoint (TypeSafe Jev or the CLM server)
+  --api-key <key>     backend API key on the command line. It lives in memory only — never in
+                      config.json or the trace — but it is visible in the process list, so the
+                      TYPESAFE_API_KEY / CLM_API_KEY environment variables remain the safer route.
   --label <name>      stats: only this label
   --json              stats: emit machine-readable JSON
   --mock              never call the Jev API; answer deterministically offline
@@ -47,6 +56,9 @@ Environment
   TYPESAFE_API_KEY          Jev API key (read from the environment only, never stored)
   TYPESAFE_BASE_URL         override the Jev endpoint
   TYPESAFE_DEFAULT_MODEL    model to request
+  CLM_BASE_URL              call a self-hosted CLM server instead (default http://127.0.0.1:8700)
+  CLM_API_KEY               optional, only when the CLM server expects a bearer token
+  JEVLENS_PROVIDER          auto | live | clm — pins the backend selection
   JEVLENS_MOCK=1            force the offline mock provider
   JEVLENS_RUN_ID            run id recorded with every decision from this process
   JEVLENS_DIR, JEVLENS_PORT, JEVLENS_HOST, JEVLENS_CONFIDENCE_THRESHOLD,
@@ -55,6 +67,10 @@ Environment
 MCP registration (any MCP-capable agent):
   { "mcpServers": { "jevlens": { "command": "npx", "args": ["-y", "jevlens", "mcp"],
     "env": { "TYPESAFE_API_KEY": "..." } } } }
+
+CLM-8B (self-hosted, TypeSafe-compatible):
+  clm-serve &                                       # CLM listens on 127.0.0.1:8700
+  { "mcpServers": { "jevlens": { "command": "npx", "args": ["-y", "jevlens", "mcp", "--provider", "clm"] } } }
 `;
 
 function toNumber(value: string | undefined): number | undefined {
@@ -87,7 +103,39 @@ export function applyFlags(config: JevLensConfig, values: Record<string, string 
   }
   if (threshold !== undefined) config.confidenceThreshold = Math.min(1, Math.max(0, threshold));
   if (values.mock === true) config.mock = true;
+  if (typeof values.provider === 'string' && values.provider) {
+    const normalized = values.provider.toLowerCase().trim();
+    if (normalized !== 'auto' && normalized !== 'live' && normalized !== 'clm') {
+      throw new RangeError(`--provider must be auto, live or clm, got "${values.provider}"`);
+    }
+    config.provider = normalized;
+  }
   return config;
+}
+
+/**
+ * Route `--base-url` / `--api-key` into the environment the providers and the
+ * scrubber already read. The key must live in `process.env` so `secretValues()`
+ * and `describeError()` can mask it in traces, and it is deliberately never
+ * written to config.json — the config file stays key-free by design.
+ */
+export function applyCredentialFlags(
+  config: JevLensConfig,
+  values: Record<string, string | boolean | undefined>,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  const baseUrl = typeof values['base-url'] === 'string' ? values['base-url'].trim() : '';
+  if (baseUrl) {
+    // Set both names: whichever backend the selection resolves to reads its own.
+    env.TYPESAFE_BASE_URL = baseUrl;
+    env.CLM_BASE_URL = baseUrl;
+  }
+  const apiKey = typeof values['api-key'] === 'string' ? values['api-key'].trim() : '';
+  if (!apiKey) return;
+  const selected = providerSelection(config, env);
+  const clmIntended = selected === 'clm' || (selected === 'auto' && Boolean(env.CLM_BASE_URL?.trim()));
+  if (clmIntended) env.CLM_API_KEY = apiKey;
+  else env.TYPESAFE_API_KEY = apiKey;
 }
 
 function logStartup(config: JevLensConfig, extra: string[]): void {
@@ -226,6 +274,10 @@ async function commandDoctor(config: JevLensConfig): Promise<number> {
   const stats = await ctx.store.stats();
   const hasKey = Boolean(process.env.TYPESAFE_API_KEY && process.env.TYPESAFE_API_KEY.trim());
   const nodeOk = Number(process.versions.node.split('.')[0]) >= 22;
+  const selected = providerSelection(config);
+  // A CLM backend needs no TypeSafe key: pinning --provider clm, or pointing
+  // CLM_BASE_URL at a local server, is already the deliberate choice.
+  const clmIntended = selected === 'clm' || (selected === 'auto' && Boolean(process.env.CLM_BASE_URL?.trim()));
 
   const checks: { label: string; ok: boolean | 'warn'; detail: string }[] = [
     { label: 'node', ok: nodeOk, detail: `${process.versions.node} (>= 22.18 needed to run the TypeScript tests)` },
@@ -239,14 +291,16 @@ async function commandDoctor(config: JevLensConfig): Promise<number> {
       // A missing key is only a problem when live calls were intended. The
       // silent fallback to the mock provider is the confusing case worth flagging.
       label: 'api key',
-      ok: hasKey || config.mock ? true : false,
+      ok: hasKey || config.mock || clmIntended ? true : false,
       detail: hasKey
         ? 'TYPESAFE_API_KEY is set'
         : config.mock
           ? 'not set, but --mock was requested so the offline provider is intended'
-          : 'TYPESAFE_API_KEY is not set — every call silently falls back to the offline mock provider',
+          : clmIntended
+            ? 'not needed: the CLM server is the backend (CLM_API_KEY is optional)'
+            : 'TYPESAFE_API_KEY is not set — every call silently falls back to the offline mock provider',
     },
-    { label: 'provider', ok: ctx.provider.kind === 'live' ? true : 'warn', detail: ctx.provider.note },
+    { label: 'provider', ok: ctx.provider.kind === 'mock' ? 'warn' : true, detail: ctx.provider.note },
   ];
 
   // `decide` never writes to the store, so this probe leaves no trace behind.
@@ -288,7 +342,15 @@ async function commandInspector(config: JevLensConfig, values: Record<string, st
   const args = ['-y', '@modelcontextprotocol/inspector', process.execPath, entry, 'mcp'];
   const env: NodeJS.ProcessEnv = { ...process.env, JEVLENS_DIR: config.storageDir, MCP_INSPECTOR_UI_PORT: port };
   process.stderr.write(`[jevlens] launching MCP Inspector on http://127.0.0.1:${port} against "${entry} mcp"\n`);
-  const child = spawn('npx', args, { stdio: 'inherit', shell: process.platform === 'win32', env });
+  // Windows spawns through cmd.exe, which concatenates args verbatim — a path
+  // with spaces like "C:\Program Files\nodejs\node.exe" would split mid-argument.
+  // Quote it ourselves (Node 22.4+ cannot spawn npx.cmd without a shell), and
+  // skip the shell on POSIX where execvp handles the spaces and PATH itself.
+  const quoteForCmd = (value: string) => (/[\s"]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value);
+  const child =
+    process.platform === 'win32'
+      ? spawn(['npx', ...args.map(quoteForCmd)].join(' '), { stdio: 'inherit', shell: true, env })
+      : spawn('npx', args, { stdio: 'inherit', env });
   return new Promise<number>((resolveCode) => {
     child.on('close', (code) => resolveCode(code ?? 1));
     child.on('error', (error) => {
@@ -319,6 +381,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 
   const config = applyFlags(loadConfig(), parsed.values);
+  applyCredentialFlags(config, parsed.values);
   switch (command) {
     case 'mcp':
       return commandMcp(config);

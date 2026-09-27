@@ -23,6 +23,18 @@ export interface JevLensConfig {
   port: number;
   /** Force the offline mock provider (no API calls) even when a key exists. */
   mock: boolean;
+  /**
+   * Which Jev-compatible backend to call: `auto` (TypeSafe Jev when a key is
+   * set, a local CLM server when CLM_BASE_URL is set, otherwise mock), `live`
+   * (TypeSafe Jev), or `clm` (a self-hosted CLM server such as CLM-8B).
+   */
+  provider: 'auto' | 'live' | 'clm';
+  /**
+   * Endpoint override for whichever backend is selected, as a fallback for
+   * `TYPESAFE_BASE_URL` / `CLM_BASE_URL`. URLs are not secret, so unlike the
+   * API key this may live in the config file.
+   */
+  baseUrl?: string;
   /** Override the Jev model used for every call. */
   model?: string;
   /** Similarity above which two Choice options are flagged as overlapping. */
@@ -38,6 +50,8 @@ const FILE_KEYS = new Set<string>([
   'host',
   'port',
   'mock',
+  'provider',
+  'baseUrl',
   'model',
   'overlapThreshold',
 ]);
@@ -98,21 +112,29 @@ export function loadConfig(cwd: string = process.cwd(), env: NodeJS.ProcessEnv =
     host: env.JEVLENS_HOST ?? String(pick('host', DEFAULTS.host)),
     port: portFromEnv ?? Number(pick('port', DEFAULTS.port)),
     mock: mockFromEnv ?? Boolean(pick('mock', false)),
+    provider: parseProvider(pick('provider', 'auto')),
+    baseUrl: pick('baseUrl', undefined) as string | undefined,
     model: env.TYPESAFE_DEFAULT_MODEL ?? (pick('model', undefined) as string | undefined),
     overlapThreshold: Number(pick('overlapThreshold', DEFAULTS.overlapThreshold)),
   };
 
-  config.confidenceThreshold = clamp(config.confidenceThreshold, 0, 1);
-  config.overlapThreshold = clamp(config.overlapThreshold, 0, 1);
+  // A non-numeric value from a typoed config key falls back to the default,
+  // never to a degenerate bound: clamp(NaN) → 0 would silently flag every
+  // decision, and port NaN would surface only as an opaque listen error.
+  const clamp01Or = (value: number, fallback: number): number =>
+    Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : fallback;
+  config.confidenceThreshold = clamp01Or(config.confidenceThreshold, DEFAULTS.confidenceThreshold);
+  config.overlapThreshold = clamp01Or(config.overlapThreshold, DEFAULTS.overlapThreshold);
   if (!Number.isFinite(config.maxRecordsPerFile) || config.maxRecordsPerFile < 1) {
     config.maxRecordsPerFile = DEFAULTS.maxRecordsPerFile;
   }
+  if (!Number.isFinite(config.port)) config.port = DEFAULTS.port;
   return config;
 }
 
-function clamp(value: number, min: number, max: number): number {
-  if (!Number.isFinite(value)) return min;
-  return Math.min(max, Math.max(min, value));
+function parseProvider(value: unknown): 'auto' | 'live' | 'clm' {
+  const normalized = String(value ?? 'auto').toLowerCase().trim();
+  return normalized === 'live' || normalized === 'clm' ? normalized : 'auto';
 }
 
 /** Persist a subset of keys into `<storageDir>/config.json` and return the stored file. */
@@ -152,5 +174,12 @@ export function isLoopbackHost(host: string): boolean {
   const cleaned = host.replace(/^\[|\]$/g, '').toLowerCase();
   if (cleaned === 'localhost') return true;
   if (cleaned === '::1') return true;
-  return /^127(\.\d{1,3}){3}$/.test(cleaned);
+  const match = /^127(\.\d{1,3}){3}$/.exec(cleaned);
+  if (!match) return false;
+  // The regex only bounds the digit count; `127.999.0.1` would be accepted
+  // without this and then fail at listen time with an unrelated error.
+  return cleaned
+    .split('.')
+    .slice(1)
+    .every((octet) => Number(octet) <= 255);
 }

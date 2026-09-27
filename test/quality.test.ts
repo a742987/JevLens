@@ -15,6 +15,17 @@ test('similarity sees paraphrases as overlapping and unrelated text as not', () 
   assert.equal(textSimilarity('', ''), 0);
 });
 
+test('a short prefix inside a longer word is a coincidence, not overlap', () => {
+  // "no" is contained in "node deploy"; flagging every such pair made any
+  // question with a "no" option unusable.
+  assert.ok(textSimilarity('no', 'node deploy') < 0.5);
+  assert.ok(textSimilarity('ai', 'airconditioning system') < 0.5);
+  // Meaningful substrings still collide: a full label embedded in another, and
+  // CJK words, where two characters already carry meaning.
+  assert.equal(textSimilarity('bug_report', 'bug_reports'), 1);
+  assert.equal(textSimilarity('接受', '接受方案'), 1);
+});
+
 test('choice options that mean the same thing are flagged', () => {
   const found = analyseQuestions({
     category: {

@@ -148,8 +148,7 @@ function usageOf(value: unknown): JevUsage | null {
 }
 
 /** Calls the real TypeSafe Jev API. */
-export class LiveJevProvider implements JevProvider {
-  readonly kind = 'live' as const;
+export class LiveJevProvider implements JevProvider {  readonly kind = 'live' as const;
   readonly note = 'TypeSafe Jev API';
   readonly defaultModel?: string;
   private readonly client: TypeSafeClient;
@@ -183,6 +182,74 @@ export class LiveJevProvider implements JevProvider {
       if (answer) answers[name] = answer;
     }
     return { model: String(typed.model ?? 'unknown'), answers, usage: usageOf(typed.usage) };
+  }
+}
+
+/** Default address `clm-serve` listens on when started from the CLM repo. */
+export const DEFAULT_CLM_BASE_URL = 'http://127.0.0.1:8700';
+
+/**
+ * Calls a self-hosted CLM server (e.g. CLM-8B). `clm-serve` exposes the same
+ * `/v1/systemone` wire format as the TypeSafe API — same question shapes, same
+ * answer shapes — so requests written for Jev replay unchanged, and the answer
+ * normalisation below is shared. Spoken with plain `fetch` because the CLM
+ * server is not behind the TypeSafe SDK.
+ */
+export class ClmJevProvider implements JevProvider {
+  readonly kind = 'clm' as const;
+  readonly note: string;
+  readonly defaultModel?: string;
+  private readonly baseURL: string;
+  private readonly apiKey?: string;
+  private readonly model?: string;
+
+  constructor(options: { baseURL?: string; apiKey?: string; model?: string } = {}) {
+    const raw = options.baseURL?.trim() || DEFAULT_CLM_BASE_URL;
+    this.baseURL = raw.replace(/\/+$/, '');
+    this.apiKey = options.apiKey?.trim() || undefined;
+    this.model = options.model;
+    this.defaultModel = options.model;
+    this.note = `CLM server (${options.model || 'clm-latest'} @ ${this.baseURL})`;
+  }
+
+  async ask(request: JevRequest, options: AskOptions = {}): Promise<JevReply> {
+    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const payload: Record<string, JsonValue> = {
+      state: request.state,
+      questions: request.questions as unknown as JsonValue,
+      ...(request.model ?? this.model ? { model: request.model ?? this.model } : {}),
+    };
+    const response = await fetch(`${this.baseURL}/v1/systemone`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        // `CLM_API_KEY` is optional: a local clm-serve usually runs without one.
+        ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}),
+      },
+      body: JSON.stringify(payload),
+      ...(Number.isFinite(timeoutMs) && timeoutMs > 0 ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
+    });
+    if (!response.ok) {
+      const detail = (await response.text().catch(() => '')).slice(0, 200);
+      const error = new Error(`CLM server responded ${response.status}${detail ? `: ${detail}` : ''}`);
+      (error as { status?: number }).status = response.status;
+      throw error;
+    }
+    const typed = (await response.json()) as {
+      model?: unknown;
+      answers?: Record<string, unknown>;
+      usage?: unknown;
+    };
+    const answers: Answers = {};
+    for (const [name, question] of Object.entries(request.questions)) {
+      const answer = normalizeAnswer(question, typed.answers?.[name]);
+      if (answer) answers[name] = answer;
+    }
+    return {
+      model: String(typed.model ?? request.model ?? this.model ?? 'clm-latest'),
+      answers,
+      usage: usageOf(typed.usage),
+    };
   }
 }
 
@@ -448,14 +515,34 @@ export function timeoutFromEnv(env: NodeJS.ProcessEnv = process.env): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TIMEOUT_MS;
 }
 
+/** Resolves the effective provider selection; `JEVLENS_PROVIDER` beats the config file. */
+export function providerSelection(config: JevLensConfig, env: NodeJS.ProcessEnv = process.env): 'auto' | 'live' | 'clm' {
+  const raw = (env.JEVLENS_PROVIDER ?? config.provider ?? 'auto').toLowerCase().trim();
+  return raw === 'live' || raw === 'clm' ? raw : 'auto';
+}
+
 export function createProvider(config: JevLensConfig, env: NodeJS.ProcessEnv = process.env): JevProvider {
   const timeoutMs = timeoutFromEnv(env);
   if (config.mock) return new MockJevProvider('mock provider (JEVLENS_MOCK)');
-  if (!hasApiKey(env)) return new MockJevProvider('mock provider (no TYPESAFE_API_KEY set)');
-  return new LiveJevProvider({
-    apiKey: env.TYPESAFE_API_KEY,
-    baseURL: env.TYPESAFE_BASE_URL,
+  const selected = providerSelection(config, env);
+  // Endpoint precedence: `--base-url` (the CLI routes it into the environment)
+  // beats the dedicated env var, which beats the config-file `baseUrl`.
+  const clmOptions = {
+    baseURL: env.CLM_BASE_URL?.trim() ? env.CLM_BASE_URL : config.baseUrl,
+    apiKey: env.CLM_API_KEY,
     model: config.model,
-    timeoutMs,
-  });
+  };
+  if (selected === 'clm') return new ClmJevProvider(clmOptions);
+  if (hasApiKey(env)) {
+    return new LiveJevProvider({
+      apiKey: env.TYPESAFE_API_KEY,
+      baseURL: env.TYPESAFE_BASE_URL ?? config.baseUrl,
+      model: config.model,
+      timeoutMs,
+    });
+  }
+  // Auto mode without a TypeSafe key: an explicitly configured CLM_BASE_URL is
+  // also a deliberate choice of backend, and CLM needs no API key.
+  if (env.CLM_BASE_URL?.trim()) return new ClmJevProvider(clmOptions);
+  return new MockJevProvider('mock provider (no TYPESAFE_API_KEY set)');
 }

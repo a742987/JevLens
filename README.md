@@ -52,7 +52,7 @@ npx -y jevlens ui --mock --port 8787
 
 ## 接入
 
-JevLens 是一个普通的 stdio MCP 服务器。唯一的密钥 `TYPESAFE_API_KEY` 只从环境变量读取，绝不写入配置文件、trace 或导出文件。
+JevLens 是一个普通的 stdio MCP 服务器。唯一的密钥（`TYPESAFE_API_KEY` 或 CLM 的 `CLM_API_KEY`）只从环境变量或 `--api-key` 参数读取，绝不写入配置文件、trace 或导出文件；自定义端点可用 `--base-url` 参数、环境变量或配置文件的 `baseUrl` 指定。
 
 <details>
 <summary><b>Claude Code</b></summary>
@@ -261,6 +261,44 @@ grep -c '"status":"undecided"' .jevlens/trace-2026-09-21.jsonl
 
 ---
 
+## 使用自托管 CLM（CLM-8B）
+
+JevLens 不绑定云端。[Contrastive-LM 的 CLM-8B](https://github.com/Contrastive-LM/CLM) 通过 `clm-serve`
+在本地暴露一个 **TypeSafe 兼容**的 `/v1/systemone` 端点，JevLens 可以把它直接当作决策后端，
+完全不需要 TypeSafe API key：
+
+```bash
+clm-serve &                                   # 默认监听 http://127.0.0.1:8700
+npx -y jevlens doctor --provider clm          # 应看到 [ok] provider  CLM server (clm-latest …)
+```
+
+MCP 注册时加一个参数即可：
+
+```json
+{ "mcpServers": { "jevlens": { "command": "npx", "args": ["-y", "jevlens", "mcp", "--provider", "clm"] } } }
+```
+
+后端的选择方式（优先级从高到低）：`--provider` → `JEVLENS_PROVIDER` → 配置文件的 `"provider"`。
+
+- `auto`（默认）：设置了 `TYPESAFE_API_KEY` 就调用 TypeSafe Jev；否则设置了 `CLM_BASE_URL`
+  就调用本地 CLM；两者都没有则回落到离线 mock provider。
+- `live`：TypeSafe Jev（需要 key）。
+- `clm`：自托管 CLM 服务器。`CLM_BASE_URL` 覆盖地址（默认 `http://127.0.0.1:8700`）；
+  `CLM_API_KEY` 仅在服务器要求 bearer token 时需要；配置里的 `model`（或
+  `TYPESAFE_DEFAULT_MODEL`）会作为请求的 `model` 传给 CLM，默认 `clm-latest`。
+
+地址与密钥的三种给法（优先级从高到低）：`--base-url` / `--api-key` 参数 → 环境变量 →
+配置文件的 `baseUrl`。密钥只存在于内存与环境变量中，配置文件永远只放 URL：
+
+```bash
+npx -y jevlens mcp --provider clm --base-url http://10.0.0.8:9100 --api-key "$CLM_API_KEY"
+```
+
+CLM 与 Jev 共用同一套问题与答案格式，所以 trace、面板、导出与质量问题提示对两种后端完全一致；
+面板上 CLM 记录带 `clm` 徽标，`jevlens doctor` 在 CLM 模式下不再要求 API key。
+
+---
+
 ## 配置
 
 | 环境变量 | 用途 | 默认值 |
@@ -268,6 +306,9 @@ grep -c '"status":"undecided"' .jevlens/trace-2026-09-21.jsonl
 | `TYPESAFE_API_KEY` | Jev API key（仅环境变量；从不持久化） | — |
 | `TYPESAFE_BASE_URL` | 覆盖 Jev 端点 | SDK 默认 |
 | `TYPESAFE_DEFAULT_MODEL` | 每次调用请求的模型 | provider 默认 |
+| `CLM_BASE_URL` | 改用自托管 CLM 服务器（如 CLM-8B） | — |
+| `CLM_API_KEY` | CLM 服务器的 bearer token（服务器要求时才需要） | — |
+| `JEVLENS_PROVIDER` | `auto` / `live` / `clm`，钉死后端选择 | `auto` |
 | `JEVLENS_DIR` | trace 目录 | `./.jevlens` |
 | `JEVLENS_PORT` / `JEVLENS_HOST` | 面板绑定 | `8787` / `127.0.0.1` |
 | `JEVLENS_CONFIDENCE_THRESHOLD` | 告警阈值 | `0.7` |
@@ -278,7 +319,7 @@ grep -c '"status":"undecided"' .jevlens/trace-2026-09-21.jsonl
 | `JEVLENS_INSPECTOR_PORT` | `jevlens inspector` 的端口 | `6274` |
 | `JEVLENS_UI_HTML` | 面板 HTML 路径（开发/测试钩子） | `<package>/ui/index.html` |
 
-`.jevlens/config.json` 放的是同一批开关（`confidenceThreshold`、`storageDir`、`host`、`port`、`maxRecordsPerFile`、`model`、`mock`、`overlapThreshold`）。优先级：内置默认值 < 配置文件 < 环境变量 < CLI 参数。
+`.jevlens/config.json` 放的是同一批开关（`confidenceThreshold`、`storageDir`、`host`、`port`、`maxRecordsPerFile`、`model`、`mock`、`provider`、`baseUrl`、`overlapThreshold`）。优先级：内置默认值 < 配置文件 < 环境变量 < CLI 参数。
 
 ```json
 { "confidenceThreshold": 0.8, "maxRecordsPerFile": 2000, "overlapThreshold": 0.55 }
@@ -297,7 +338,7 @@ jevlens inspector   launch the official MCP Inspector against this server
 jevlens help        usage;  -v / --version prints the version
 ```
 
-公共参数：`--port <n>`、`--host <addr>`、`--dir <path>`、`--threshold <0..1>`、`--mock`；`jevlens inspector` 另外接受 `--inspector-port <n>`。它们位于优先级链的最上层，因此命令行参数总是压过配置文件与环境变量。
+公共参数：`--port <n>`、`--host <addr>`、`--dir <path>`、`--threshold <0..1>`、`--mock`、`--provider <auto|live|clm>`、`--base-url <url>`、`--api-key <key>`；`jevlens inspector` 另外接受 `--inspector-port <n>`。它们位于优先级链的最上层，因此命令行参数总是压过配置文件与环境变量。
 
 `jevlens stats` 只读取磁盘上已有的东西，不往里面添加任何内容。`--label <name>` 把分标签表格收窄到一个
 标签，`--json` 则把整份聚合结果输出为机器可读的 JSON。两者同样接受 `--dir` 与 `--threshold`。

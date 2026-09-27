@@ -111,7 +111,7 @@
       <div class="controls">
         <label>label <select id="label"><option value="">all</option></select></label>
         <label>run <select id="run"><option value="">all</option></select></label>
-        <label>confidence alert &lt; <input id="threshold" type="number" min="0" max="1" step="0.05" value="0.7" /></label>
+        <label>confidence alert &lt; <input id="threshold" type="number" min="0" max="1" step="0.05" value="0.7" title="Saved to .jevlens/config.json and applied to this panel immediately. A running `jevlens mcp` reads its config at startup, so restart it to apply the new threshold to future records." /></label>
         <label><input id="lowonly" type="checkbox" /> flagged only</label>
         <label>limit <select id="limit"><option>50</option><option>100</option><option>200</option><option>500</option></select></label>
         <input id="search" type="search" placeholder="filter by text…" />
@@ -218,7 +218,7 @@
             <span class="chip">${esc(record.response && record.response.model ? record.response.model : 'no model')}</span>
             <span class="chip">${esc(String(record.latencyMs))} ms</span>
             ${record.runId ? `<span class="chip run" title="run ${esc(record.runId)}">${esc(shortRun(record.runId))}</span>` : ''}
-            ${record.provider === 'mock' ? '<span class="chip mock">mock</span>' : ''}
+            ${record.provider === 'mock' ? '<span class="chip mock">mock</span>' : record.provider === 'clm' ? '<span class="chip mock">clm</span>' : ''}
             ${record.hints && record.hints.length ? `<span class="chip mock">${record.hints.length} hint${record.hints.length > 1 ? 's' : ''}</span>` : ''}
             <span class="peek">${esc(peek)}</span>
           </div>

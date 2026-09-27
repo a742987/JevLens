@@ -215,6 +215,7 @@ async function handle(
         port: config.port,
         maxRecordsPerFile: config.maxRecordsPerFile,
         mock: config.mock,
+        provider: config.provider,
         model: config.model ?? null,
         version: VERSION,
       });

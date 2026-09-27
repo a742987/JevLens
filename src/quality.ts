@@ -79,7 +79,16 @@ function dice(a: Set<string>, b: Set<string>): number {
 export function textSimilarity(a: string, b: string): number {
   const lower = a.toLowerCase().trim();
   const upper = b.toLowerCase().trim();
-  if (lower && upper && (lower === upper || lower.includes(upper) || upper.includes(lower))) return 1;
+  if (lower && upper && lower === upper) return 1;
+  if (lower && upper) {
+    const [shorter, longer] = lower.length <= upper.length ? [lower, upper] : [upper, lower];
+    // One option naming a subset of the other is a collision, but only when the
+    // embedded string is meaningful on its own: a 2-letter prefix like "no"
+    // inside "node deploy" is a coincidence, while `bug_report` inside
+    // `bug_reports` and 2+ CJK characters ("接受" inside "接受方案") are real.
+    const meaningful = shorter.length >= 4 || (shorter.length >= 2 && /[\u4e00-\u9fff]/.test(shorter));
+    if (meaningful && longer.includes(shorter)) return 1;
+  }
   return Math.max(jaccard(tokenize(a), tokenize(b)), dice(bigrams(a), bigrams(b)));
 }
 
