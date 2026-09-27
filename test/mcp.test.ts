@@ -231,3 +231,27 @@ test('JEVLENS_RUN_ID from the environment labels every decision', async () => {
   assert.equal((await captureDecision(ctx, { state: 'x', questions: triageQuestions, runId: '  ' })).record.runId, 'from-env', 'blank is not a run id');
   await workspace.cleanup();
 });
+
+test('jev_trace honours include_payload=false over the wire', async () => {
+  const { session, cleanup } = await connect();
+  await session.client.callTool({
+    name: 'jev_ask',
+    arguments: { state: ticketState, questions: triageQuestions, label: 'triage' },
+  });
+
+  const lean = session.text(
+    await session.client.callTool({ name: 'jev_trace', arguments: { limit: 5, include_payload: false } }),
+  );
+  const leanRecord = (lean.records as { state: unknown; questions: unknown; answers: unknown }[])[0];
+  assert.deepEqual(
+    leanRecord.state,
+    { _omitted: true, keys: ['subject', 'body', 'channel'] },
+    'the state payload is summarised, not returned in full',
+  );
+  assert.ok(leanRecord.questions && leanRecord.answers, 'answers and question definitions stay so the record is still readable');
+
+  const full = session.text(await session.client.callTool({ name: 'jev_trace', arguments: { limit: 5 } }));
+  const fullRecord = (full.records as { state: unknown }[])[0];
+  assert.deepEqual(fullRecord.state, ticketState, 'the default keeps the full payload');
+  await cleanup();
+});

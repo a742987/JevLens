@@ -205,7 +205,7 @@ jevlens ui --port 8787
 
 - Timeline of every decision, newest first, with label, model, latency and minimum confidence.
 - Probability bars per question; the returned answer is the highlighted bar.
-- Confidence alerts: anything below the threshold is outlined in red and counted in the summary cards. The threshold is editable in the header and is persisted to `.jevlens/config.json`.
+- Confidence alerts: anything below the threshold is outlined in red and counted in the summary cards (the cards summarise the **whole trace**, not just the loaded page). The threshold is editable in the header and is persisted to `.jevlens/config.json`.
 - Auto-refresh every 3 seconds (polling, no WebSocket), pausable, and idle while the tab is hidden.
 - Expand a row for the raw `state`, question definitions, hints, error text and the full record.
 - Label filter, "flagged only" toggle, limit selector and a text filter over the whole record.
@@ -336,13 +336,21 @@ hints behave identically for both backends; CLM records carry a `clm` chip in th
 ```
 jevlens mcp         start the MCP server on stdio (what your agent launches)
 jevlens ui          start the local decision timeline
+jevlens watch       watch the trace and alert on undecided / low-confidence decisions
 jevlens stats       aggregate the trace on disk: tokens, latency, undecided rate, per label
 jevlens doctor      check the install: Node, API key, trace dir, provider, one live Jev call
 jevlens inspector   launch the official MCP Inspector against this server
 jevlens help        usage;  -v / --version prints the version
 ```
 
-Shared flags: `--port <n>`, `--host <addr>`, `--dir <path>`, `--threshold <0..1>`, `--mock`, `--provider <auto|live|clm>`, `--base-url <url>`, `--api-key <key>`; `jevlens inspector` also takes `--inspector-port <n>`. They sit on top of the precedence chain, so a flag always beats config file and environment.
+Shared flags: `--port <n>`, `--host <addr>`, `--dir <path>`, `--threshold <0..1>`, `--mock`, `--provider <auto|live|clm>`, `--base-url <url>`, `--api-key <key>`; `jevlens inspector` also takes `--inspector-port <n>` and `jevlens watch` takes `--interval <secs>`. They sit on top of the precedence chain, so a flag always beats config file and environment.
+
+`jevlens watch` sits next to your agent: it polls the trace directory (`--interval <secs>`, default 5)
+and judges only decisions appended **after** it started — an `undecided` outcome or a minimum confidence
+below the threshold rings the bell, prints an `[ALERT]` line and fires a best-effort desktop notification
+(macOS `osascript` / Linux `notify-send` / Windows toast). `--label <name>` narrows the alerts to one
+label. It reads the trace through the incremental index, so leaving it up for an afternoon costs nothing;
+Ctrl-C prints how many new decisions and alerts it saw.
 
 `jevlens stats` reads what is already on disk and adds nothing to it. `--label <name>` narrows the
 per-label table to one label, and `--json` emits the whole aggregate as machine-readable JSON. Both

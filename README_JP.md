@@ -205,7 +205,7 @@ jevlens ui --port 8787
 
 - すべての判断のタイムライン。新しい順に、ラベル、モデル、レイテンシ、最小信頼度を表示。
 - 質問ごとの確率バー。返された回答がハイライトされたバーです。
-- 信頼度アラート: 閾値を下回るものは赤い枠線で示され、サマリーカードの集計に入ります。閾値はヘッダーで編集でき、`.jevlens/config.json` に保存されます。
+- 信頼度アラート: 閾値を下回るものは赤い枠線で示され、サマリーカードの集計に入ります（カードは読み込んだページではなく**トレース全体**を集計します）。閾値はヘッダーで編集でき、`.jevlens/config.json` に保存されます。
 - 3 秒ごとの自動更新（ポーリングで WebSocket は使いません）。一時停止でき、タブが非表示のあいだはアイドル状態になります。
 - 行を展開すると、生の `state`、質問の定義、ヒント、エラーテキスト、レコード全体を確認できます。
 - ラベルによる絞り込み、「フラグ付きのみ」のトグル、件数選択、レコード全体のテキスト絞り込み。
@@ -335,13 +335,21 @@ CLM モードでは `jevlens doctor` は API キーを要求しなくなりま�
 ```
 jevlens mcp         start the MCP server on stdio (what your agent launches)
 jevlens ui          start the local decision timeline
+jevlens watch       watch the trace and alert on undecided / low-confidence decisions
 jevlens stats       aggregate the trace on disk: tokens, latency, undecided rate, per label
 jevlens doctor      check the install: Node, API key, trace dir, provider, one live Jev call
 jevlens inspector   launch the official MCP Inspector against this server
 jevlens help        usage;  -v / --version prints the version
 ```
 
-共通フラグ: `--port <n>`、`--host <addr>`、`--dir <path>`、`--threshold <0..1>`、`--mock`、`--provider <auto|live|clm>`、`--base-url <url>`、`--api-key <key>`。`jevlens inspector` ではこれに加えて `--inspector-port <n>` が使えます。これらのフラグは優先順位チェーンの最上位に置かれるため、設定ファイルや環境変数に常に優先します。
+共通フラグ: `--port <n>`、`--host <addr>`、`--dir <path>`、`--threshold <0..1>`、`--mock`、`--provider <auto|live|clm>`、`--base-url <url>`、`--api-key <key>`。`jevlens inspector` ではこれに加えて `--inspector-port <n>` が、`jevlens watch` では `--interval <secs>` が使えます。これらのフラグは優先順位チェーンの最上位に置かれるため、設定ファイルや環境変数に常に優先します。
+
+`jevlens watch` はエージェントのそばに控えます。トレースディレクトリをポーリングし（`--interval <secs>`、
+デフォルト 5）、**起動後**に追記された決定だけを判定します — `undecided` または最低信頼度がしきい値を
+下回ると、ベルを鳴らし `[ALERT]` 行を表示し、可能であればデスクトップ通知を送ります（macOS `osascript` /
+Linux `notify-send` / Windows toast）。`--label <name>` でアラートを 1 つのラベルに絞り込めます。トレースを
+増分インデックス経由で読むだけなので、午後じゅう付けっぱなしにしても追加コストはほぼゼロです。Ctrl-C で
+終了すると、見た決定数とアラート数をまとめて表示します。
 
 `jevlens stats` はディスク上にある既存のデータを読み取るだけで、何も追記しません。`--label <name>` は
 ラベル別の表を 1 つのラベルに絞り込み、`--json` は集計結果全体を機械可読な JSON として出力します。どちらも

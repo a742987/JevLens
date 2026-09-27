@@ -84,7 +84,8 @@ export interface StoreOverview {
 }
 
 /** The few fields the aggregate views need, kept instead of the whole record. */
-interface IndexEntry {
+export interface IndexEntry {
+  id: string;
   ts: string;
   label: string;
   status: TraceStatus;
@@ -311,6 +312,26 @@ export class TraceStore {
   }
 
   /**
+   * Light-weight feed for long-running consumers (`jevlens watch`): everything
+   * appended strictly after `sinceTs`, oldest first. Served from the same
+   * incremental index as the aggregates, so polling every few seconds costs a
+   * stat() per file plus the appended tail — never a full re-parse. Timestamps
+   * are stored as UTC ISO strings, so lexicographic order is chronological.
+   */
+  async entriesSince(sinceTs: string): Promise<IndexEntry[]> {
+    const out: IndexEntry[] = [];
+    const files = await this.files();
+    for (let i = files.length - 1; i >= 0; i -= 1) {
+      const summary = await this.summaryFor(files[i]!.name);
+      if (!summary) continue;
+      for (const entry of summary.index) {
+        if (entry.ts > sinceTs) out.push(entry);
+      }
+    }
+    return out;
+  }
+
+  /**
    * Aggregate view of one file, extended incrementally: only the bytes appended
    * since the last call are parsed, and a torn trailing line is left out of
    * `consumed` so it is reconsidered once the write completes.
@@ -527,6 +548,7 @@ function indexOfLine(line: string): IndexEntry | null {
     }
     const num = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
     return {
+      id: parsed.id,
       ts: parsed.ts,
       label: typeof parsed.label === 'string' ? parsed.label : 'default',
       status: parsed.status === 'undecided' ? 'undecided' : 'answered',

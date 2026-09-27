@@ -205,7 +205,7 @@ jevlens ui --port 8787
 
 - 每条决策的时间线，最新的在前，含 label、model、延迟与最低置信度。
 - 每个问题的概率条；被返回的那个答案是高亮条。
-- 置信度告警：低于阈值的记录用红框描出，并计入概览卡片。阈值可在页头直接修改，并持久化到 `.jevlens/config.json`。
+- 置信度告警：低于阈值的记录用红框描出，并计入概览卡片（统计卡汇总的是**整个 trace**，而不只是当前加载的页）。阈值可在页头直接修改，并持久化到 `.jevlens/config.json`。
 - 每 3 秒自动刷新（轮询，无 WebSocket），可暂停，标签页隐藏时保持空闲。
 - 展开某行可看到原始 `state`、问题定义、hints、错误文本与完整记录。
 - label 过滤、"flagged only" 开关、条数选择器，以及作用于整条记录的文本过滤。
@@ -332,13 +332,20 @@ CLM 与 Jev 共用同一套问题与答案格式，所以 trace、面板、导�
 ```
 jevlens mcp         start the MCP server on stdio (what your agent launches)
 jevlens ui          start the local decision timeline
+jevlens watch       watch the trace and alert on undecided / low-confidence decisions
 jevlens stats       aggregate the trace on disk: tokens, latency, undecided rate, per label
 jevlens doctor      check the install: Node, API key, trace dir, provider, one live Jev call
 jevlens inspector   launch the official MCP Inspector against this server
 jevlens help        usage;  -v / --version prints the version
 ```
 
-公共参数：`--port <n>`、`--host <addr>`、`--dir <path>`、`--threshold <0..1>`、`--mock`、`--provider <auto|live|clm>`、`--base-url <url>`、`--api-key <key>`；`jevlens inspector` 另外接受 `--inspector-port <n>`。它们位于优先级链的最上层，因此命令行参数总是压过配置文件与环境变量。
+公共参数：`--port <n>`、`--host <addr>`、`--dir <path>`、`--threshold <0..1>`、`--mock`、`--provider <auto|live|clm>`、`--base-url <url>`、`--api-key <key>`；`jevlens inspector` 另外接受 `--inspector-port <n>`，`jevlens watch` 另外接受 `--interval <secs>`。它们位于优先级链的最上层，因此命令行参数总是压过配置文件与环境变量。
+
+`jevlens watch` 守在 Agent 旁边：它轮询 trace 目录（`--interval <secs>`，默认 5），只对**启动之后**
+新落盘的决策做判断——`undecided` 或最低置信度低于阈值就响铃、打印 `[ALERT]` 行，并尽最大努力发一条
+系统桌面通知（macOS `osascript` / Linux `notify-send` / Windows toast）。`--label <name>` 可把告警
+收窄到一个标签。它只读 trace，用增量索引轮询，因此挂一下午也没有额外开销；Ctrl-C 退出时会汇总
+本次看到的决策数与告警数。
 
 `jevlens stats` 只读取磁盘上已有的东西，不往里面添加任何内容。`--label <name>` 把分标签表格收窄到一个
 标签，`--json` 则把整份聚合结果输出为机器可读的 JSON。两者同样接受 `--dir` 与 `--threshold`。

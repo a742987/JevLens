@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -164,4 +164,66 @@ test('unknown commands still print usage and exit non-zero', async () => {
   assert.match(result.stderr, /unknown command "nonsense"/);
   assert.match(result.stderr, /jevlens doctor/);
   assert.match(result.stderr, /jevlens stats/);
+});
+
+/** Poll a predicate until it holds or the budget runs out, with what we saw so far on failure. */
+async function waitFor(predicate: () => boolean, timeoutMs: number, context: () => string): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`condition not met within ${timeoutMs} ms\n--- stdout ---\n${context()}`);
+}
+
+/**
+ * Windows releases a killed child's directory handles asynchronously, so an
+ * immediate rmdir races the 'exit' event and fails with EBUSY. Retry briefly.
+ */
+async function cleanupWorkspace(workspace: { cleanup: () => Promise<void> }): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await workspace.cleanup();
+      return;
+    } catch (error) {
+      if (attempt >= 10 || !(error as NodeJS.ErrnoException).code?.startsWith('E')) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  }
+}
+
+test('jevlens watch alerts on low-confidence decisions appended while it runs', async () => {
+  const workspace = await seededWorkspace();
+  const child = spawn(
+    process.execPath,
+    [cliEntry, 'watch', '--dir', workspace.config.storageDir, '--interval', '0.2'],
+    { cwd: workspace.dir, env: { ...process.env, TYPESAFE_API_KEY: '' }, stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+  child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+  try {
+    await waitFor(() => /watching for low-confidence/.test(stderr), 15_000, () => stdout + stderr);
+
+    // A decision lands in the trace from another process — the MCP server in
+    // real usage — while the watcher is only reading.
+    const store = new TraceStore(workspace.config.storageDir, 100);
+    await store.append(
+      record({ label: 'router', status: 'undecided', confidence: { min: 0, mean: 0, perQuestion: {}, belowThreshold: ['mood'] } }),
+    );
+    await store.flush();
+    await waitFor(() => /\[ALERT\]/.test(stdout), 15_000, () => stdout + stderr);
+    assert.match(stdout, /label=router/);
+    assert.match(stdout, /UNDECIDED/);
+    assert.match(stdout, /\x07/, 'the terminal bell is rung');
+
+    // Records that were already in the trace before the watcher started are
+    // history, not alerts — only the appended decision above may appear.
+    assert.equal((stdout.match(/\[ALERT\]/g) ?? []).length, 1);
+  } finally {
+    child.kill();
+    await new Promise<void>((resolve) => child.once('exit', () => resolve()));
+    await cleanupWorkspace(workspace);
+  }
 });

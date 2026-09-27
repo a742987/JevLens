@@ -352,3 +352,26 @@ test('overview aggregates tokens, latency and the undecided rate', async () => {
   assert.equal(overview.byLabel.find((entry) => entry.label === 'triage')?.count, 2);
   await workspace.cleanup();
 });
+
+test('entriesSince feeds a watcher from the incremental index, oldest first', async () => {
+  const workspace = await tempWorkspace();
+  const store = new TraceStore(workspace.config.storageDir, 100);
+  await store.append(makeRecord({ id: 'a', ts: '2026-04-01T00:00:01Z' }));
+  await store.append(makeRecord({ id: 'b', ts: '2026-04-01T00:00:02Z', status: 'undecided', confidence: { min: 0, mean: 0, perQuestion: {}, belowThreshold: ['category'] } }));
+
+  const sinceEpoch = await store.entriesSince('1970-01-01T00:00:00.000Z');
+  assert.deepEqual(sinceEpoch.map((entry) => entry.id), ['a', 'b'], 'chronological order');
+  assert.equal(sinceEpoch[0]?.status, 'answered');
+  assert.equal(sinceEpoch[1]?.min, 0);
+
+  // The watcher's contract: strictly-after filtering and only the appended tail.
+  const incremental = await store.entriesSince('2026-04-01T00:00:01Z');
+  assert.deepEqual(incremental.map((entry) => entry.id), ['b']);
+  assert.deepEqual(await store.entriesSince('2026-04-01T00:00:02Z'), [], 'nothing new since the latest');
+  assert.equal((await store.entriesSince('2099-01-01T00:00:00.000Z')).length, 0);
+
+  // A record appended after the index was built must show up on the next poll.
+  await store.append(makeRecord({ id: 'c', ts: '2026-04-01T00:00:03Z' }));
+  assert.deepEqual((await store.entriesSince('2026-04-01T00:00:02Z')).map((entry) => entry.id), ['c']);
+  await workspace.cleanup();
+});

@@ -137,7 +137,7 @@
       for (const id of ['label','run','threshold','lowonly','limit','search','auto','refresh','expand','status','cards','list','dir','provider','md','csv','chart','fallback']) {
         els[id] = document.getElementById(id);
       }
-      const state = { records: [], threshold: 0.7, open: new Set(), expandedAll: false, timer: null, first: true };
+      const state = { records: [], overview: null, threshold: 0.7, open: new Set(), expandedAll: false, timer: null, first: true };
 
       const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
       const fmt = (n, digits = 3) => (typeof n === 'number' && isFinite(n) ? n.toFixed(digits) : '—');
@@ -244,19 +244,38 @@
         });
       }
 
-      function renderCards(records) {
-        const total = records.length;
-        const undecided = records.filter((r) => r.status === 'undecided').length;
-        const flagged = records.filter((r) => r.status === 'undecided' || (r.confidence && r.confidence.min < state.threshold)).length;
-        const avgLatency = total ? Math.round(records.reduce((a, r) => a + (r.latencyMs || 0), 0) / total) : 0;
-        const cards = [
-          ['decisions', total],
-          ['flagged', flagged],
-          ['undecided', undecided],
-          ['avg latency', avgLatency + ' ms'],
-          ['threshold', state.threshold],
-        ];
-        els.cards.innerHTML = cards.map(([k, v]) => `<div class="card"><b>${esc(v)}</b><small>${esc(k)}</small></div>`).join('');
+      /**
+       * The cards report the whole store via /api/overview, not just the loaded
+       * page — with limit=50 the page-based numbers silently capped "decisions"
+       * at 50. Falls back to page arithmetic if the overview call fails.
+       */
+      function renderCards(overview, records) {
+        let cards;
+        if (overview && typeof overview.records === 'number') {
+          cards = [
+            ['decisions', overview.records],
+            ['flagged', overview.flagged],
+            ['undecided', overview.undecided],
+            ['latency p50', (overview.latency ? overview.latency.p50 : 0) + ' ms'],
+            ['threshold', state.threshold],
+          ];
+        } else {
+          const total = records.length;
+          const undecided = records.filter((r) => r.status === 'undecided').length;
+          const flagged = records.filter((r) => r.status === 'undecided' || (r.confidence && r.confidence.min < state.threshold)).length;
+          const avgLatency = total ? Math.round(records.reduce((a, r) => a + (r.latencyMs || 0), 0) / total) : 0;
+          cards = [
+            ['decisions', total],
+            ['flagged', flagged],
+            ['undecided', undecided],
+            ['avg latency', avgLatency + ' ms'],
+            ['threshold', state.threshold],
+          ];
+        }
+        const note = overview && typeof overview.records === 'number' ? 'whole trace store, not just the loaded page' : 'loaded page only';
+        els.cards.innerHTML = cards
+          .map(([k, v]) => `<div class="card" title="${esc(note)}"><b>${esc(v)}</b><small>${esc(k)}</small></div>`)
+          .join('');
       }
 
       function renderChart() {
@@ -290,7 +309,7 @@
 
       function render() {
         const records = visibleRecords();
-        renderCards(state.records);
+        renderCards(state.overview, state.records);
         const list = records.map(row).join('');
         els.list.innerHTML = list || `<div class="empty"><h2>no decisions yet</h2>
           <p>Register JevLens with your agent, then call <code>jev_ask</code>. Without an API key run
@@ -322,10 +341,14 @@
         else if (state.runParam) params.set('run', state.runParam);
         if (els.lowonly.checked) params.set('below', String(state.threshold));
         try {
-          const response = await fetch(`/api/trace?${params}`, { headers: { accept: 'application/json' } });
+          const [response, overviewResponse] = await Promise.all([
+            fetch(`/api/trace?${params}`, { headers: { accept: 'application/json' } }),
+            fetch('/api/overview', { headers: { accept: 'application/json' } }).catch(() => null),
+          ]);
           const payload = await response.json();
           if (!response.ok) throw new Error(payload.error || response.statusText);
           state.records = payload.records || [];
+          state.overview = overviewResponse && overviewResponse.ok ? await overviewResponse.json() : null;
           if (typeof payload.threshold === 'number' && document.activeElement !== els.threshold) state.threshold = payload.threshold;
           // Exports follow the active filters, so what you download is what you see.
           const exportQuery = new URLSearchParams();

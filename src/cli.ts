@@ -18,6 +18,7 @@ const OPTIONS = {
   'base-url': { type: 'string' },
   'api-key': { type: 'string' },
   'inspector-port': { type: 'string' },
+  interval: { type: 'string' },
   label: { type: 'string' },
   json: { type: 'boolean' },
   mock: { type: 'boolean' },
@@ -30,6 +31,7 @@ const HELP = `JevLens v${VERSION} — Jev decision recorder and debug panel
 Usage
   jevlens mcp         start the MCP server on stdio (register this with your coding agent)
   jevlens ui          start the local decision timeline at http://127.0.0.1:${DEFAULTS.port}
+  jevlens watch       watch the trace and alert on undecided / low-confidence decisions
   jevlens stats       aggregate the trace: tokens, latency, undecided rate, per label
   jevlens doctor      check the install: Node version, API key, trace dir, live Jev call
   jevlens inspector   start the official MCP Inspector against "jevlens mcp"
@@ -45,7 +47,8 @@ Options
   --api-key <key>     backend API key on the command line. It lives in memory only — never in
                       config.json or the trace — but it is visible in the process list, so the
                       TYPESAFE_API_KEY / CLM_API_KEY environment variables remain the safer route.
-  --label <name>      stats: only this label
+  --label <name>      stats: only this label · watch: only alert on this label
+  --interval <secs>   watch: poll interval in seconds (default 5, minimum 0.2)
   --json              stats: emit machine-readable JSON
   --mock              never call the Jev API; answer deterministically offline
   --inspector-port <n>  port for "jevlens inspector" (default 6274)
@@ -266,6 +269,119 @@ async function commandStats(config: JevLensConfig, values: Record<string, string
 }
 
 /**
+ * Follow the trace and alert the moment a decision comes back undecided or
+ * below the confidence threshold. Reads only — alerts come from the incremental
+ * index, so watching costs one stat() per file per poll, never a re-parse.
+ */
+async function commandWatch(config: JevLensConfig, values: Record<string, string | boolean | undefined>): Promise<number> {
+  const requested = toNumber(values.interval as string | undefined);
+  if (requested !== undefined && (requested < 0.2 || requested > 3600)) {
+    process.stderr.write(`[jevlens] --interval must be between 0.2 and 3600 seconds, got "${values.interval}"\n`);
+    return 2;
+  }
+  const intervalMs = Math.round((requested ?? 5) * 1000);
+  const labelFilter = typeof values.label === 'string' && values.label ? values.label : null;
+  const ctx = createContext(config);
+  const store = ctx.store;
+
+  // Only decisions appended after watch started are alerted: the point is to
+  // sit next to a running agent, not to replay yesterday's history.
+  const baseline = (await store.stats()).newest ?? '1970-01-01T00:00:00.000Z';
+  let lastTs = baseline;
+  const reported = new Set<string>();
+  let seen = 0;
+  let alerts = 0;
+
+  process.stderr.write(
+    [
+      `[jevlens ${VERSION}] watching for low-confidence decisions`,
+      `  trace:    ${config.storageDir}`,
+      `  alerts:   undecided or min confidence < ${config.confidenceThreshold}${labelFilter ? ` · label "${labelFilter}" only` : ''}`,
+      `  interval: every ${intervalMs} ms — Ctrl-C to stop`,
+    ].join('\n') + '\n',
+  );
+
+  const notify = (message: string): void => {
+    // Best-effort desktop notification; a missing binary or blocked OS feature
+    // must never take the watcher down, so every failure is swallowed.
+    try {
+      if (process.platform === 'darwin') {
+        spawn('osascript', ['-e', `display notification "${message.replace(/"/g, '')}" with title "JevLens"`], { stdio: 'ignore' }).unref();
+      } else if (process.platform === 'linux') {
+        spawn('notify-send', ['JevLens', message], { stdio: 'ignore' }).unref();
+      } else if (process.platform === 'win32') {
+        const script =
+          `[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null; ` +
+          `$t=[Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); ` +
+          `$t.GetElementsByTagName('text').Item(0).AppendChild($t.CreateTextNode('JevLens'))|Out-Null; ` +
+          `$t.GetElementsByTagName('text').Item(1).AppendChild($t.CreateTextNode('${message.replace(/'/g, '')}'))|Out-Null; ` +
+          `[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('JevLens').Show([Windows.UI.Notifications.ToastNotification]::new($t))`;
+        spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], { stdio: 'ignore' }).unref();
+      }
+    } catch {
+      /* notifications are a courtesy, never a dependency */
+    }
+  };
+
+  const poll = async (): Promise<void> => {
+    const entries = await store.entriesSince(lastTs);
+    for (const entry of entries) {
+      // Same-timestamp records can straddle two polls; the id set is what
+      // actually decides "reported", `lastTs` only bounds the scan.
+      if (reported.has(entry.id)) continue;
+      reported.add(entry.id);
+      if (reported.size > 5000) {
+        for (const id of reported) {
+          reported.delete(id);
+          if (reported.size <= 2500) break;
+        }
+      }
+      lastTs = entry.ts > lastTs ? entry.ts : lastTs;
+      seen += 1;
+      if (labelFilter && entry.label !== labelFilter) continue;
+      const flagged = entry.status === 'undecided' || entry.min < config.confidenceThreshold;
+      if (!flagged) continue;
+      alerts += 1;
+      const detail =
+        entry.status === 'undecided'
+          ? 'UNDECIDED'
+          : `min confidence ${entry.min.toFixed(3)} < ${config.confidenceThreshold}`;
+      process.stdout.write(`\x07[ALERT] ${entry.ts}  label=${entry.label}  ${detail}  id=${entry.id}\n`);
+      notify(`${entry.label}: ${detail}`);
+    }
+  };
+
+  let stopped = false;
+  let timer: NodeJS.Timeout | null = null;
+  const finish = (resolve: (code: number) => void) => {
+    if (stopped) return;
+    stopped = true;
+    if (timer) clearInterval(timer);
+    process.stdout.write(
+      `\n[jevlens] watch stopped — ${seen} new decision(s), ${alerts} alert(s) while watching.\n`,
+    );
+    void store.flush().then(() => resolve(0));
+  };
+
+  return new Promise<number>((resolve) => {
+    process.on('SIGINT', () => finish(resolve));
+    process.on('SIGTERM', () => finish(resolve));
+    const tick = () => {
+      poll().catch((error) => {
+        process.stderr.write(`[jevlens] poll failed: ${String(error)}\n`);
+      });
+    };
+    void poll()
+      .catch((error) => {
+        process.stderr.write(`[jevlens] poll failed: ${String(error)}\n`);
+      })
+      .finally(() => {
+        if (!stopped) timer = setInterval(tick, intervalMs);
+      });
+  });
+}
+
+/**
  * Answers "why is everything coming back mock?" without reading the source:
  * reports the runtime, the key, the trace directory and one real Jev round trip.
  */
@@ -389,6 +505,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       return commandUi(config);
     case 'stats':
       return commandStats(config, parsed.values);
+    case 'watch':
+      return commandWatch(config, parsed.values);
     case 'doctor':
       return commandDoctor(config);
     case 'inspector':
