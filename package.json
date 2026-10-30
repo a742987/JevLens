@@ -1,6 +1,6 @@
 {
   "name": "@a742987/jevlens",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Jev decision visualisation and debugging panel for coding agents. MCP server + local web timeline, confidence alerts and trace export.",
   "keywords": [
     "jev",
