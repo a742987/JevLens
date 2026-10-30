@@ -5,7 +5,7 @@ function readVersion(): string {
   for (const candidate of [join(import.meta.dirname, '..', 'package.json'), join(import.meta.dirname, 'package.json')]) {
     try {
       const pkg = JSON.parse(readFileSync(candidate, 'utf8')) as { name?: string; version?: string };
-      if (pkg.name === 'jevlens' && typeof pkg.version === 'string') return pkg.version;
+      if ((pkg.name === 'jevlens' || pkg.name === '@a742987/jevlens') && typeof pkg.version === 'string') return pkg.version;
     } catch {
       /* try the next candidate */
     }
