@@ -31,19 +31,19 @@ MCP サーバーとパネルは、JSONL ファイル以外には何も共有し�
 
 ```bash
 # 1. Register it with your coding agent (Claude Code shown; see "Wiring" below for others)
-claude mcp add jevlens --env TYPESAFE_API_KEY=$TYPESAFE_API_KEY -- npx -y jevlens mcp
+claude mcp add jevlens --env TYPESAFE_API_KEY=$TYPESAFE_API_KEY -- npx -y @a742987/jevlens mcp
 
 # 2. Ask your agent to call the tool, e.g.
 #    "Use the jevlens jev_ask tool to classify this support ticket: I was charged twice, fix it today."
 
 # 3. Look at what Jev actually returned
-npx -y jevlens ui          # then open http://127.0.0.1:8787
+npx -y @a742987/jevlens ui          # then open http://127.0.0.1:8787
 ```
 
 API キーがまだなくても、決定論的なオフラインプロバイダーに対してそのままエンドツーエンドで動きます。まずはパネルとツールの形を試すことができます:
 
 ```bash
-npx -y jevlens ui --mock --port 8787
+npx -y @a742987/jevlens ui --mock --port 8787
 ```
 
 パネルは各レコードにモックプロバイダーのバッジ（`mock`）を表示するので、デモデータと実際の判断を混同することは決してありません。
@@ -58,7 +58,7 @@ JevLens はプレーンな stdio MCP サーバーです。唯一のシークレ�
 <summary><b>Claude Code</b></summary>
 
 ```bash
-claude mcp add jevlens --env TYPESAFE_API_KEY="$TYPESAFE_API_KEY" -- npx -y jevlens mcp
+claude mcp add jevlens --env TYPESAFE_API_KEY="$TYPESAFE_API_KEY" -- npx -y @a742987/jevlens mcp
 ```
 
 または、プロジェクト直下の `.mcp.json` に:
@@ -68,7 +68,7 @@ claude mcp add jevlens --env TYPESAFE_API_KEY="$TYPESAFE_API_KEY" -- npx -y jevl
   "mcpServers": {
     "jevlens": {
       "command": "npx",
-      "args": ["-y", "jevlens", "mcp"],
+      "args": ["-y", "@a742987/jevlens", "mcp"],
       "env": { "TYPESAFE_API_KEY": "${TYPESAFE_API_KEY}" }
     }
   }
@@ -84,7 +84,7 @@ claude mcp add jevlens --env TYPESAFE_API_KEY="$TYPESAFE_API_KEY" -- npx -y jevl
 ```toml
 [mcp_servers.jevlens]
 command = "npx"
-args = ["-y", "jevlens", "mcp"]
+args = ["-y", "@a742987/jevlens", "mcp"]
 env = { TYPESAFE_API_KEY = "tsk_live_..." }
 ```
 </details>
@@ -99,7 +99,7 @@ env = { TYPESAFE_API_KEY = "tsk_live_..." }
   "mcpServers": {
     "jevlens": {
       "command": "npx",
-      "args": ["-y", "jevlens", "mcp"],
+      "args": ["-y", "@a742987/jevlens", "mcp"],
       "env": { "TYPESAFE_API_KEY": "tsk_live_..." }
     }
   }
@@ -117,7 +117,7 @@ env = { TYPESAFE_API_KEY = "tsk_live_..." }
   "mcp": {
     "jevlens": {
       "type": "local",
-      "command": ["npx", "-y", "jevlens", "mcp"],
+      "command": ["npx", "-y", "@a742987/jevlens", "mcp"],
       "environment": { "TYPESAFE_API_KEY": "tsk_live_..." },
       "enabled": true
     }
@@ -129,7 +129,7 @@ env = { TYPESAFE_API_KEY = "tsk_live_..." }
 <details>
 <summary><b>その他の MCP クライアント</b></summary>
 
-コマンドは `npx -y jevlens mcp`（グローバルにインストールした場合は `jevlens mcp`）、トランスポートは `stdio`、そして子プロセスの環境に `TYPESAFE_API_KEY` を渡します。
+コマンドは `npx -y @a742987/jevlens mcp`（グローバルにインストールした場合は `jevlens mcp`）、トランスポートは `stdio`、そして子プロセスの環境に `TYPESAFE_API_KEY` を渡します。
 </details>
 
 ---
@@ -269,13 +269,13 @@ TypeSafe の API キーなしでそれを判断バックエンドとして使え
 
 ```bash
 clm-serve &                                   # デフォルトで http://127.0.0.1:8700 をリッスン
-npx -y jevlens doctor --provider clm          # [ok] provider  CLM server (clm-latest …) と表示されるはず
+npx -y @a742987/jevlens doctor --provider clm          # [ok] provider  CLM server (clm-latest …) と表示されるはず
 ```
 
 MCP サーバーの登録時に引数を 1 つ追加するだけです:
 
 ```json
-{ "mcpServers": { "jevlens": { "command": "npx", "args": ["-y", "jevlens", "mcp", "--provider", "clm"] } } }
+{ "mcpServers": { "jevlens": { "command": "npx", "args": ["-y", "@a742987/jevlens", "mcp", "--provider", "clm"] } } }
 ```
 
 バックエンドの選び方（優先度の高い順）: `--provider` → `JEVLENS_PROVIDER` → 設定ファイルの `"provider"`。
@@ -293,7 +293,7 @@ MCP サーバーの登録時に引数を 1 つ追加するだけです:
 設定ファイルの `baseUrl`。キーはメモリと環境変数だけに存在し、設定ファイルは URL だけを保持します:
 
 ```bash
-npx -y jevlens mcp --provider clm --base-url http://10.0.0.8:9100 --api-key "$CLM_API_KEY"
+npx -y @a742987/jevlens mcp --provider clm --base-url http://10.0.0.8:9100 --api-key "$CLM_API_KEY"
 ```
 
 CLM は Jev と同じ質問・回答フォーマットを共有するため、トレース・パネル・エクスポート・

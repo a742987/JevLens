@@ -31,19 +31,19 @@ The MCP server and the panel are two independent processes that share nothing bu
 
 ```bash
 # 1. Register it with your coding agent (Claude Code shown; see "Wiring" below for others)
-claude mcp add jevlens --env TYPESAFE_API_KEY=$TYPESAFE_API_KEY -- npx -y jevlens mcp
+claude mcp add jevlens --env TYPESAFE_API_KEY=$TYPESAFE_API_KEY -- npx -y @a742987/jevlens mcp
 
 # 2. Ask your agent to call the tool, e.g.
 #    "Use the jevlens jev_ask tool to classify this support ticket: I was charged twice, fix it today."
 
 # 3. Look at what Jev actually returned
-npx -y jevlens ui          # then open http://127.0.0.1:8787
+npx -y @a742987/jevlens ui          # then open http://127.0.0.1:8787
 ```
 
 No API key yet? Everything still works end to end against a deterministic offline provider, so you can try the panel and the tool shapes first:
 
 ```bash
-npx -y jevlens ui --mock --port 8787
+npx -y @a742987/jevlens ui --mock --port 8787
 ```
 
 The panel then shows the mock provider badge (`mock`) on every record, so you never confuse demo data with real decisions.
@@ -58,7 +58,7 @@ JevLens is a plain stdio MCP server. The only secret — `TYPESAFE_API_KEY`, or 
 <summary><b>Claude Code</b></summary>
 
 ```bash
-claude mcp add jevlens --env TYPESAFE_API_KEY="$TYPESAFE_API_KEY" -- npx -y jevlens mcp
+claude mcp add jevlens --env TYPESAFE_API_KEY="$TYPESAFE_API_KEY" -- npx -y @a742987/jevlens mcp
 ```
 
 or in `.mcp.json` at the project root:
@@ -68,7 +68,7 @@ or in `.mcp.json` at the project root:
   "mcpServers": {
     "jevlens": {
       "command": "npx",
-      "args": ["-y", "jevlens", "mcp"],
+      "args": ["-y", "@a742987/jevlens", "mcp"],
       "env": { "TYPESAFE_API_KEY": "${TYPESAFE_API_KEY}" }
     }
   }
@@ -84,7 +84,7 @@ In `~/.codex/config.toml`:
 ```toml
 [mcp_servers.jevlens]
 command = "npx"
-args = ["-y", "jevlens", "mcp"]
+args = ["-y", "@a742987/jevlens", "mcp"]
 env = { TYPESAFE_API_KEY = "tsk_live_..." }
 ```
 </details>
@@ -99,7 +99,7 @@ In `.cursor/mcp.json`:
   "mcpServers": {
     "jevlens": {
       "command": "npx",
-      "args": ["-y", "jevlens", "mcp"],
+      "args": ["-y", "@a742987/jevlens", "mcp"],
       "env": { "TYPESAFE_API_KEY": "tsk_live_..." }
     }
   }
@@ -117,7 +117,7 @@ In `opencode.json`:
   "mcp": {
     "jevlens": {
       "type": "local",
-      "command": ["npx", "-y", "jevlens", "mcp"],
+      "command": ["npx", "-y", "@a742987/jevlens", "mcp"],
       "environment": { "TYPESAFE_API_KEY": "tsk_live_..." },
       "enabled": true
     }
@@ -129,7 +129,7 @@ In `opencode.json`:
 <details>
 <summary><b>Any other MCP client</b></summary>
 
-Command: `npx -y jevlens mcp` (or `jevlens mcp` if installed globally), transport: `stdio`, and `TYPESAFE_API_KEY` in the child environment.
+Command: `npx -y @a742987/jevlens mcp` (or `jevlens mcp` if installed globally), transport: `stdio`, and `TYPESAFE_API_KEY` in the child environment.
 </details>
 
 ---
@@ -269,13 +269,13 @@ JevLens can use it as the decision backend with no TypeSafe API key at all:
 
 ```bash
 clm-serve &                                   # listens on http://127.0.0.1:8700 by default
-npx -y jevlens doctor --provider clm          # expect [ok] provider  CLM server (clm-latest …)
+npx -y @a742987/jevlens doctor --provider clm          # expect [ok] provider  CLM server (clm-latest …)
 ```
 
 Add one argument when registering the MCP server:
 
 ```json
-{ "mcpServers": { "jevlens": { "command": "npx", "args": ["-y", "jevlens", "mcp", "--provider", "clm"] } } }
+{ "mcpServers": { "jevlens": { "command": "npx", "args": ["-y", "@a742987/jevlens", "mcp", "--provider", "clm"] } } }
 ```
 
 How the backend is picked, highest precedence first: `--provider` → `JEVLENS_PROVIDER` → the
@@ -294,7 +294,7 @@ the environment variables → the config file's `baseUrl`. The key lives in memo
 environment only; the config file stays URL-only:
 
 ```bash
-npx -y jevlens mcp --provider clm --base-url http://10.0.0.8:9100 --api-key "$CLM_API_KEY"
+npx -y @a742987/jevlens mcp --provider clm --base-url http://10.0.0.8:9100 --api-key "$CLM_API_KEY"
 ```
 
 CLM shares Jev's question and answer format, so traces, the panel, exports and question-quality

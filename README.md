@@ -31,19 +31,19 @@ MCP 服务器与面板是两个独立进程，除 JSONL 文件外不共享任何
 
 ```bash
 # 1. Register it with your coding agent (Claude Code shown; see "Wiring" below for others)
-claude mcp add jevlens --env TYPESAFE_API_KEY=$TYPESAFE_API_KEY -- npx -y jevlens mcp
+claude mcp add jevlens --env TYPESAFE_API_KEY=$TYPESAFE_API_KEY -- npx -y @a742987/jevlens mcp
 
 # 2. Ask your agent to call the tool, e.g.
 #    "Use the jevlens jev_ask tool to classify this support ticket: I was charged twice, fix it today."
 
 # 3. Look at what Jev actually returned
-npx -y jevlens ui          # then open http://127.0.0.1:8787
+npx -y @a742987/jevlens ui          # then open http://127.0.0.1:8787
 ```
 
 还没有 API key？整套流程照样能对着一个确定性的离线 provider 端到端跑通，所以你可以先试面板和工具的调用形态：
 
 ```bash
-npx -y jevlens ui --mock --port 8787
+npx -y @a742987/jevlens ui --mock --port 8787
 ```
 
 此时面板会在每条记录上显示 mock provider 徽标（`mock`），你绝不会把演示数据误当成真实决策。
@@ -58,7 +58,7 @@ JevLens 是一个普通的 stdio MCP 服务器。唯一的密钥（`TYPESAFE_API
 <summary><b>Claude Code</b></summary>
 
 ```bash
-claude mcp add jevlens --env TYPESAFE_API_KEY="$TYPESAFE_API_KEY" -- npx -y jevlens mcp
+claude mcp add jevlens --env TYPESAFE_API_KEY="$TYPESAFE_API_KEY" -- npx -y @a742987/jevlens mcp
 ```
 
 或写进项目根目录的 `.mcp.json`：
@@ -68,7 +68,7 @@ claude mcp add jevlens --env TYPESAFE_API_KEY="$TYPESAFE_API_KEY" -- npx -y jevl
   "mcpServers": {
     "jevlens": {
       "command": "npx",
-      "args": ["-y", "jevlens", "mcp"],
+      "args": ["-y", "@a742987/jevlens", "mcp"],
       "env": { "TYPESAFE_API_KEY": "${TYPESAFE_API_KEY}" }
     }
   }
@@ -84,7 +84,7 @@ claude mcp add jevlens --env TYPESAFE_API_KEY="$TYPESAFE_API_KEY" -- npx -y jevl
 ```toml
 [mcp_servers.jevlens]
 command = "npx"
-args = ["-y", "jevlens", "mcp"]
+args = ["-y", "@a742987/jevlens", "mcp"]
 env = { TYPESAFE_API_KEY = "tsk_live_..." }
 ```
 </details>
@@ -99,7 +99,7 @@ env = { TYPESAFE_API_KEY = "tsk_live_..." }
   "mcpServers": {
     "jevlens": {
       "command": "npx",
-      "args": ["-y", "jevlens", "mcp"],
+      "args": ["-y", "@a742987/jevlens", "mcp"],
       "env": { "TYPESAFE_API_KEY": "tsk_live_..." }
     }
   }
@@ -117,7 +117,7 @@ env = { TYPESAFE_API_KEY = "tsk_live_..." }
   "mcp": {
     "jevlens": {
       "type": "local",
-      "command": ["npx", "-y", "jevlens", "mcp"],
+      "command": ["npx", "-y", "@a742987/jevlens", "mcp"],
       "environment": { "TYPESAFE_API_KEY": "tsk_live_..." },
       "enabled": true
     }
@@ -129,7 +129,7 @@ env = { TYPESAFE_API_KEY = "tsk_live_..." }
 <details>
 <summary><b>任何其它 MCP 客户端</b></summary>
 
-命令：`npx -y jevlens mcp`（全局安装后也可以是 `jevlens mcp`），传输方式：`stdio`，并在子进程环境里给出 `TYPESAFE_API_KEY`。
+命令：`npx -y @a742987/jevlens mcp`（全局安装后也可以是 `jevlens mcp`），传输方式：`stdio`，并在子进程环境里给出 `TYPESAFE_API_KEY`。
 </details>
 
 ---
@@ -269,13 +269,13 @@ JevLens 不绑定云端。[Contrastive-LM 的 CLM-8B](https://github.com/Contras
 
 ```bash
 clm-serve &                                   # 默认监听 http://127.0.0.1:8700
-npx -y jevlens doctor --provider clm          # 应看到 [ok] provider  CLM server (clm-latest …)
+npx -y @a742987/jevlens doctor --provider clm          # 应看到 [ok] provider  CLM server (clm-latest …)
 ```
 
 MCP 注册时加一个参数即可：
 
 ```json
-{ "mcpServers": { "jevlens": { "command": "npx", "args": ["-y", "jevlens", "mcp", "--provider", "clm"] } } }
+{ "mcpServers": { "jevlens": { "command": "npx", "args": ["-y", "@a742987/jevlens", "mcp", "--provider", "clm"] } } }
 ```
 
 后端的选择方式（优先级从高到低）：`--provider` → `JEVLENS_PROVIDER` → 配置文件的 `"provider"`。
@@ -291,7 +291,7 @@ MCP 注册时加一个参数即可：
 配置文件的 `baseUrl`。密钥只存在于内存与环境变量中，配置文件永远只放 URL：
 
 ```bash
-npx -y jevlens mcp --provider clm --base-url http://10.0.0.8:9100 --api-key "$CLM_API_KEY"
+npx -y @a742987/jevlens mcp --provider clm --base-url http://10.0.0.8:9100 --api-key "$CLM_API_KEY"
 ```
 
 CLM 与 Jev 共用同一套问题与答案格式，所以 trace、面板、导出与质量问题提示对两种后端完全一致；

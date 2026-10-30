@@ -1,5 +1,5 @@
 {
-  "name": "jevlens",
+  "name": "@a742987/jevlens",
   "version": "0.1.0",
   "description": "Jev decision visualisation and debugging panel for coding agents. MCP server + local web timeline, confidence alerts and trace export.",
   "keywords": [
@@ -29,7 +29,7 @@
     }
   },
   "bin": {
-    "jevlens": "./dist/cli.js"
+    "jevlens": "dist/cli.js"
   },
   "files": [
     "dist",
